@@ -1336,13 +1336,13 @@ export default function CustomersPage() {
                   </div>
 
                   {/* ✅ NEW: Pitch Next */}
-                  {false ? (
+{false ? (
   <div>
     <div className="font-medium text-sm mb-2">Pitch Next</div>
 
     {callPrepData?.itemIntel?.pitchNext?.length ? (
       <ul className="space-y-1">
-        callPrepData?.itemIntel?.pitchNext?.map(...)
+        {callPrepData?.itemIntel?.pitchNext?.map((it: any) => (
           <li
             key={`pitch-${it.itemCode}-${it.reason}`}
             className="flex items-baseline justify-between gap-3 text-sm"
@@ -1363,6 +1363,7 @@ export default function CustomersPage() {
     )}
   </div>
 ) : null}
+
 
 
                   <div className="text-xs text-gray-500">
