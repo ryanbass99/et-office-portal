@@ -33,7 +33,7 @@ export default function TopSalesmanChart({ data }: { data: SalesData[] }) {
                 style: "currency",
                 currency: "USD",
                 maximumFractionDigits: 0,
-              }).format(value)
+              }).format(Number(value ?? 0))
             }
           />
 
@@ -52,13 +52,13 @@ export default function TopSalesmanChart({ data }: { data: SalesData[] }) {
             }}
             itemStyle={{ color: "#000000" }}
             labelStyle={{ color: "#000000" }}
-            formatter={(value?: number) => {
+            formatter={(value) => {
               if (value == null) return "";
               return new Intl.NumberFormat("en-US", {
                 style: "currency",
                 currency: "USD",
                 maximumFractionDigits: 0,
-              }).format(value);
+              }).format(Number(value));
             }}
           />
 
