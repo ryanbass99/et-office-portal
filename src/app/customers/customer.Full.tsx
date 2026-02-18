@@ -202,7 +202,7 @@ export default function CustomersPage() {
     }
 
     let all: Customer[] = [];
-    let last: DocumentSnapshot | null = null;
+    let last: any = null;
 
     while (true) {
  const qry: any = last
