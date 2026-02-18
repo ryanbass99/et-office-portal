@@ -205,20 +205,20 @@ export default function CustomersPage() {
     let last: DocumentSnapshot | null = null;
 
     while (true) {
-  const qry = last
-    ? query(
-        collection(db, "customers"),
-        or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
-        orderBy("customerName"),
-        startAfter(last),
-        limit(FETCH_CHUNK)
-      )
-    : query(
-        collection(db, "customers"),
-        or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
-        orderBy("customerName"),
-        limit(FETCH_CHUNK)
-      );
+ const qry: any = last
+  ? query(
+      collection(db, "customers"),
+      or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
+      orderBy("customerName"),
+      startAfter(last),
+      limit(FETCH_CHUNK)
+    )
+  : query(
+      collection(db, "customers"),
+      or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
+      orderBy("customerName"),
+      limit(FETCH_CHUNK)
+    );
 
       const snap = await getDocs(qry);
       all = all.concat(mapSnap(snap));
