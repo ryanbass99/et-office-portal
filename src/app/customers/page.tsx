@@ -338,10 +338,10 @@ export default function CustomersPage() {
     }
 
     let all: Customer[] = [];
-    let last: DocumentSnapshot | null = null;
+    let last: any = null;
 
     while (true) {
-      const q = last
+      const q: any = last
         ? query(
             collection(db, "customers"),
             or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
