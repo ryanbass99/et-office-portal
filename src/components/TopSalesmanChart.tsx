@@ -15,11 +15,7 @@ type SalesData = {
   total: number;
 };
 
-export default function TopSalesmanChart({
-  data,
-}: {
-  data: SalesData[];
-}) {
+export default function TopSalesmanChart({ data }: { data: SalesData[] }) {
   return (
     <div style={{ width: "100%", height: 350 }}>
       <ResponsiveContainer>
@@ -29,41 +25,49 @@ export default function TopSalesmanChart({
           margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
         >
           <CartesianGrid strokeDasharray="3 3" />
+
           <XAxis
-  type="number"
-  tickFormatter={(value) =>
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(value)
-  }
-/>
+            type="number"
+            tickFormatter={(value) =>
+              new Intl.NumberFormat("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 0,
+              }).format(value)
+            }
+          />
+
           <YAxis
-  type="category"
-  dataKey="name"
-  width={120}
-  tick={{ fontSize: 12 }}
-/>
+            type="category"
+            dataKey="name"
+            width={120}
+            tick={{ fontSize: 12 }}
+          />
+
           <Tooltip
-  cursor={false}
-  contentStyle={{
-    backgroundColor: "#ffffff",
-    border: "1px solid #000000",
-  }}
-  itemStyle={{ color: "#000000" }}
-  labelStyle={{ color: "#000000" }}
-  formatter={(value: number) =>
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(value)
-  }
-/>
+            cursor={false}
+            contentStyle={{
+              backgroundColor: "#ffffff",
+              border: "1px solid #000000",
+            }}
+            itemStyle={{ color: "#000000" }}
+            labelStyle={{ color: "#000000" }}
+            formatter={(value?: number) => {
+              if (value == null) return "";
+              return new Intl.NumberFormat("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 0,
+              }).format(value);
+            }}
+          />
 
-
-          <Bar dataKey="total" fill="#dc2626" barSize={22} radius={[0, 3, 3, 0]} />
+          <Bar
+            dataKey="total"
+            fill="#dc2626"
+            barSize={22}
+            radius={[0, 3, 3, 0]}
+          />
         </BarChart>
       </ResponsiveContainer>
     </div>
