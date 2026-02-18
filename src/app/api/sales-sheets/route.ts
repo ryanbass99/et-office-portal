@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { getApps, initializeApp, cert, getApp } from "firebase-admin/app";
 import { getStorage } from "firebase-admin/storage";
+
+export const runtime = "nodejs"; // force Node runtime on Netlify/Next
 
 function mustEnv(name: string) {
   const v = process.env[name];
@@ -8,18 +10,27 @@ function mustEnv(name: string) {
   return v;
 }
 
-if (!getApps().length) {
-  const projectId = mustEnv("FIREBASE_PROJECT_ID");
-  const clientEmail = mustEnv("FIREBASE_CLIENT_EMAIL");
-  const privateKey = mustEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
+const STORAGE_APP_NAME = "storage-admin";
 
-  const storageBucket =
-    process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`;
+function getStorageApp() {
+  // ✅ Always use a dedicated app instance so we never depend on the default app’s config.
+  try {
+    return getApp(STORAGE_APP_NAME);
+  } catch {
+    const projectId = mustEnv("FIREBASE_PROJECT_ID");
+    const clientEmail = mustEnv("FIREBASE_CLIENT_EMAIL");
+    const privateKey = mustEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
 
-  initializeApp({
-    credential: cert({ projectId, clientEmail, privateKey }),
-    storageBucket,
-  });
+    const storageBucket = mustEnv("FIREBASE_STORAGE_BUCKET"); // e.g. et-office-portal.firebasestorage.app
+
+    return initializeApp(
+      {
+        credential: cert({ projectId, clientEmail, privateKey }),
+        storageBucket,
+      },
+      STORAGE_APP_NAME
+    );
+  }
 }
 
 const PREFIX_CANDIDATES = [
@@ -32,24 +43,23 @@ const PREFIX_CANDIDATES = [
 
 export async function GET() {
   try {
-    const bucket = getStorage().bucket();
+    const app = getStorageApp();
 
-    // Pull a small sample of objects so we can detect the real folder
+    const bucketName = mustEnv("FIREBASE_STORAGE_BUCKET");
+    const bucket = getStorage(app).bucket(bucketName);
+
     const [all] = await bucket.getFiles({ maxResults: 200 });
-
     const names = all.map((f) => f.name);
 
-    // Find which candidate prefix actually exists in the bucket
     const detectedPrefix =
       PREFIX_CANDIDATES.find((p) => names.some((n) => n.startsWith(p))) ?? null;
 
-    // If nothing matched, return diagnostics so we can see what the bucket contains
     if (!detectedPrefix) {
       return NextResponse.json(
         {
           sheets: [],
           diagnostic: {
-            bucket: process.env.FIREBASE_STORAGE_BUCKET,
+            bucket: bucketName,
             sampleObjects: names.slice(0, 50),
             note:
               "No known sales-sheets folder found. Look at sampleObjects to see actual folder names.",
@@ -72,7 +82,7 @@ export async function GET() {
     return NextResponse.json({
       sheets: pdfs,
       diagnostic: {
-        bucket: process.env.FIREBASE_STORAGE_BUCKET,
+        bucket: bucketName,
         detectedPrefix,
         totalObjectsScanned: names.length,
         pdfCount: pdfs.length,
