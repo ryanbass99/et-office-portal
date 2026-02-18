@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { initializeApp, cert, getApp } from "firebase-admin/app";
 import { getStorage } from "firebase-admin/storage";
+
+export const runtime = "nodejs"; // force Node runtime
 
 function mustEnv(name: string) {
   const v = process.env[name];
@@ -8,17 +10,26 @@ function mustEnv(name: string) {
   return v;
 }
 
-// Firebase Admin init (server-side)
-if (!getApps().length) {
-  const projectId = mustEnv("FIREBASE_PROJECT_ID");
-  const clientEmail = mustEnv("FIREBASE_CLIENT_EMAIL");
-  const privateKey = mustEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
+const STORAGE_APP_NAME = "storage-admin";
 
-  initializeApp({
-    credential: cert({ projectId, clientEmail, privateKey }),
-    // IMPORTANT: bucket name like: et-office-portal.appspot.com
-    storageBucket: mustEnv("FIREBASE_STORAGE_BUCKET"),
-  });
+function getStorageApp() {
+  // Always use a dedicated app instance so we never depend on the default app’s config.
+  try {
+    return getApp(STORAGE_APP_NAME);
+  } catch {
+    const projectId = mustEnv("FIREBASE_PROJECT_ID");
+    const clientEmail = mustEnv("FIREBASE_CLIENT_EMAIL");
+    const privateKey = mustEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
+    const storageBucket = mustEnv("FIREBASE_STORAGE_BUCKET"); // e.g. et-office-portal.firebasestorage.app
+
+    return initializeApp(
+      {
+        credential: cert({ projectId, clientEmail, privateKey }),
+        storageBucket,
+      },
+      STORAGE_APP_NAME
+    );
+  }
 }
 
 export async function GET(req: Request) {
@@ -32,7 +43,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Invalid path" }, { status: 400 });
     }
 
-    const bucket = getStorage().bucket(); // uses storageBucket from init above
+    const app = getStorageApp();
+    const bucketName = mustEnv("FIREBASE_STORAGE_BUCKET");
+    const bucket = getStorage(app).bucket(bucketName);
+
     const file = bucket.file(decoded);
 
     const [exists] = await file.exists();
@@ -40,7 +54,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // Short-lived signed URL (you can change to 1 hour if you want)
+    // Short-lived signed URL
     const expiresAt = Date.now() + 15 * 60 * 1000;
 
     const [signedUrl] = await file.getSignedUrl({
@@ -49,7 +63,6 @@ export async function GET(req: Request) {
       expires: expiresAt,
     });
 
-    // Redirect user to the signed URL
     return NextResponse.redirect(signedUrl, { status: 302 });
   } catch (e: any) {
     return NextResponse.json(
