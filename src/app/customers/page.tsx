@@ -1340,9 +1340,9 @@ export default function CustomersPage() {
   <div>
     <div className="font-medium text-sm mb-2">Pitch Next</div>
 
-    {callPrepData.itemIntel.pitchNext?.length ? (
+    {callPrepData?.itemIntel?.pitchNext?.length ? (
       <ul className="space-y-1">
-        {callPrepData.itemIntel.pitchNext.map((it) => (
+        callPrepData?.itemIntel?.pitchNext?.map(...)
           <li
             key={`pitch-${it.itemCode}-${it.reason}`}
             className="flex items-baseline justify-between gap-3 text-sm"
