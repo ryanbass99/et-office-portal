@@ -50,11 +50,22 @@ function rowHighlight(ts?: Timestamp) {
   return "";
 }
 
+// "0041" == "41"
+function normalizeSalesCode(v: any): string {
+  if (v === null || v === undefined) return "";
+  const s = String(v).trim();
+  if (!s) return "";
+  const digits = s.replace(/\D/g, "");
+  if (!digits) return s.toLowerCase();
+  return (digits.replace(/^0+/, "") || "0").trim();
+}
+
 export default function FollowUpsWidget() {
   const router = useRouter();
 
   const [role, setRole] = useState<string>("user");
   const [uid, setUid] = useState<string | null>(null);
+  const [userSalesperson, setUserSalesperson] = useState<string>("");
 
   const [customerRows, setCustomerRows] = useState<CustomerFU[]>([]);
   const [leadRows, setLeadRows] = useState<LeadFU[]>([]);
@@ -66,19 +77,19 @@ export default function FollowUpsWidget() {
     end.setDate(end.getDate() + 7);
 
     return {
-      start: Timestamp.fromDate(today), // kept (used for display math), but NOT used in queries
       end: Timestamp.fromDate(
         new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59)
       ),
     };
   }, []);
 
-  // Auth + role
+  // Auth + role + salesperson (your schema: users/{uid}.salesperson)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
         setUid(null);
         setRole("user");
+        setUserSalesperson("");
         setCustomerRows([]);
         setLeadRows([]);
         setLoading(false);
@@ -89,9 +100,13 @@ export default function FollowUpsWidget() {
 
       try {
         const snap = await getDoc(doc(db, "users", u.uid));
-        setRole((snap.data()?.role as string) || "user");
+        const data = snap.data() as any;
+
+        setRole((data?.role as string) || "user");
+        setUserSalesperson(String(data?.salesperson ?? "").trim());
       } catch {
         setRole("user");
+        setUserSalesperson("");
       }
     });
 
@@ -106,63 +121,75 @@ export default function FollowUpsWidget() {
 
       setLoading(true);
       try {
-        // ✅ Include overdue + next 7 days:
-        // query followUpDate <= end (this includes overdue automatically)
+        const isAdmin = role === "admin";
+        const userCodeNorm = normalizeSalesCode(userSalesperson);
+
+        // DEBUG (remove later): proves which file is running + which salesperson it sees
+        console.log("[FollowUpsWidget live]", { role, uid, userSalesperson, userCodeNorm });
+
         const notesQ = query(
           collectionGroup(db, "notes"),
           where("followUpDate", "<=", range.end),
           orderBy("followUpDate", "asc"),
-          limit(50)
+          limit(300)
         );
 
         const notesSnap = await getDocs(notesQ);
 
-        const customerNos = new Set<string>();
-        const rawNotes: Array<{
-          customerNo: string;
-          noteText: string;
-          followUpDate: Timestamp;
-        }> = [];
+        const customerCache = new Map<
+          string,
+          { allowed: boolean; name: string; custSalespersonNo: string }
+        >();
 
-        for (const d of notesSnap.docs) {
-          const data = d.data() as any;
+        const customerFU: CustomerFU[] = [];
+
+        for (const nd of notesSnap.docs) {
+          const data = nd.data() as any;
           const followUpDate = data.followUpDate as Timestamp | undefined;
           if (!followUpDate?.toDate) continue;
 
-          const customerNo = d.ref.parent.parent?.id; // customers/{customerNo}/notes/{id}
+          const customerNo = nd.ref.parent.parent?.id; // customers/{customerNo}/notes/{id}
           if (!customerNo) continue;
 
-          rawNotes.push({
-            customerNo,
-            noteText: (data.text ?? "").toString(),
-            followUpDate,
-          });
-          customerNos.add(customerNo);
-        }
+          if (!customerCache.has(customerNo)) {
+            let allowed = false;
+            let name = "";
+            let custSalespersonNo = "";
 
-        // customer name lookup
-        const nameMap: Record<string, string> = {};
-        await Promise.all(
-          Array.from(customerNos).slice(0, 50).map(async (cno) => {
             try {
-              const cs = await getDoc(doc(db, "customers", cno));
+              const cs = await getDoc(doc(db, "customers", customerNo));
               if (cs.exists()) {
                 const cd = cs.data() as any;
-                nameMap[cno] =
-                  cd.customerName || cd.name || cd.customer_name || "";
+
+                name = String(cd.customerName ?? "").trim();
+                custSalespersonNo = String(cd.salespersonNo ?? "").trim();
+
+                if (isAdmin) {
+                  allowed = true;
+                } else {
+                  const custNorm = normalizeSalesCode(custSalespersonNo);
+                  allowed = !!userCodeNorm && !!custNorm && custNorm === userCodeNorm;
+                }
               }
             } catch {}
-          })
-        );
 
-        const customerFU: CustomerFU[] = rawNotes.map((n) => ({
-          customerNo: n.customerNo,
-          customerName: nameMap[n.customerNo] || "",
-          noteText: n.noteText,
-          followUpDate: n.followUpDate,
-        }));
+            customerCache.set(customerNo, { allowed, name, custSalespersonNo });
+          }
 
-        // --- Sales Leads follow ups ---
+          const cached = customerCache.get(customerNo)!;
+          if (!cached.allowed) continue;
+
+          customerFU.push({
+            customerNo,
+            customerName: cached.name || "",
+            noteText: String(data.text ?? ""),
+            followUpDate,
+          });
+
+          if (customerFU.length >= 50) break;
+        }
+
+        // Sales Leads follow ups (your schema uses salesmanId = uid)
         const leadsBase = collection(db, "salesLeads");
 
         const leadsQ =
@@ -185,17 +212,17 @@ export default function FollowUpsWidget() {
 
         const leadFU: LeadFU[] = leadsSnap.docs
           .map((d) => {
-            const data = d.data() as any;
-            const status = (data.status ?? "open").toString();
+            const lead = d.data() as any;
+            const status = String(lead.status ?? "open");
             if (status !== "open") return null;
 
             return {
               leadId: d.id,
-              customerLabel: `${data.customerName ?? ""} — ${data.city ?? ""}, ${
-                data.state ?? ""
+              customerLabel: `${lead.customerName ?? ""} — ${lead.city ?? ""}, ${
+                lead.state ?? ""
               }`.trim(),
-              noteText: (data.comments ?? "").toString(),
-              followUpDate: data.followUpDate as Timestamp,
+              noteText: String(lead.comments ?? ""),
+              followUpDate: lead.followUpDate as Timestamp,
             } as LeadFU;
           })
           .filter(Boolean) as LeadFU[];
@@ -219,7 +246,7 @@ export default function FollowUpsWidget() {
     return () => {
       cancelled = true;
     };
-  }, [uid, role, range.end]);
+  }, [uid, role, userSalesperson, range.end]);
 
   return (
     <div className="bg-white p-4 rounded shadow">
@@ -282,7 +309,6 @@ export default function FollowUpsWidget() {
                     key={`l_${r.leadId}`}
                     onClick={() =>
                       router.push(
-                        // ✅ FIX: your actual route is /salesLeads (camelCase)
                         `/salesLeads?leadId=${encodeURIComponent(
                           r.leadId
                         )}&open=details`
