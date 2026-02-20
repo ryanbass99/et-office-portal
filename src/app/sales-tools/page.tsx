@@ -13,6 +13,7 @@ type Buyer = {
   salespersonNo?: string;
   sales25?: number;
   tier?: string;
+  buyerEmail?: string;
 };
 
 export default function SalesToolsPage() {
