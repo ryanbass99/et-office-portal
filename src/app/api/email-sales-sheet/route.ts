@@ -1,27 +1,71 @@
 import { NextResponse } from "next/server";
-import sgMail from "@sendgrid/mail";
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { getStorage } from "firebase-admin/storage";
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+/**
+ * Sales Sheets - Option A (opens user's default email client)
+ *
+ * This endpoint returns a *clean* mailto URL.
+ * - Keeps your current workflow (opens Outlook / default client)
+ * - Makes the link look professional (uses production domain + friendly text)
+ * - Does NOT send the email server-side and does NOT attach PDFs
+ */
 
-// Firebase Admin init (server-side)
+function mustEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env var: ${name}`);
+  return v;
+}
+
+// Firebase Admin init (server-side) — only used to verify caller's ID token
 if (!getApps().length) {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
-
-  if (!projectId || !clientEmail || !privateKey) {
-    throw new Error(
-      "Missing Firebase Admin env vars. Need FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY."
-    );
-  }
+  const projectId = mustEnv("FIREBASE_PROJECT_ID");
+  const clientEmail = mustEnv("FIREBASE_CLIENT_EMAIL");
+  const privateKey = mustEnv("FIREBASE_PRIVATE_KEY").replace(/\\n/g, "\n");
 
   initializeApp({
     credential: cert({ projectId, clientEmail, privateKey }),
-    storageBucket: "et-office-portal.firebasestorage.app",
   });
+}
+
+function getBaseUrl(req: Request) {
+  // ✅ Prefer an explicit production base URL
+  const explicit = process.env.NEXT_PUBLIC_SITE_URL || process.env.SITE_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+
+  // Fallback to request headers (works on Netlify/Vercel)
+  const proto =
+    req.headers.get("x-forwarded-proto") ||
+    (process.env.NODE_ENV === "production" ? "https" : "http");
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
+
+  // If you're hitting a local dev server via LAN IP, the email will look ugly.
+  // Prefer your real portal domain when the host looks like a private IP.
+  const hostOnly = host.replace(/:\d+$/, "");
+  const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostOnly);
+  const isPrivateIpv4 =
+    isIpv4 &&
+    (hostOnly.startsWith("10.") ||
+      hostOnly.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostOnly));
+
+  if (isPrivateIpv4) {
+    return (process.env.PORTAL_PUBLIC_URL || "https://portal.etproductsinc.com").replace(
+      /\/$/,
+      ""
+    );
+  }
+
+  return `${proto}://${host}`.replace(/\/$/, "");
+}
+
+function base64url(input: string) {
+  // URL-safe base64 without padding
+  return Buffer.from(input, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 export async function POST(req: Request) {
@@ -34,15 +78,7 @@ export async function POST(req: Request) {
     }
 
     const decoded = await getAuth().verifyIdToken(m[1]);
-    const senderEmail = decoded.email || "";
     const senderName = (decoded.name || "").trim();
-
-    if (!senderEmail) {
-      return NextResponse.json(
-        { error: "Logged-in user has no email on account" },
-        { status: 400 }
-      );
-    }
 
     const { to, fullPath, name } = await req.json();
     if (!to || !fullPath || !name) {
@@ -52,39 +88,31 @@ export async function POST(req: Request) {
       );
     }
 
-    // From MUST be a verified SendGrid sender/domain
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL; // set to sales@etproductsinc.com
-    if (!fromEmail) {
-      return NextResponse.json(
-        { error: "Missing env var: SENDGRID_FROM_EMAIL" },
-        { status: 500 }
-      );
-    }
+    // Use your portal domain (no internal IP)
+    const baseUrl = getBaseUrl(req);
 
-    // Download PDF bytes from Storage
-    const bucket = getStorage().bucket();
-    const [buf] = await bucket.file(fullPath).download();
+    // ✅ Make the URL visually cleaner by base64url-encoding the path
+    // NOTE: update your /api/sales-sheets/open route to accept `p=` as well as `path=`.
+    const p = base64url(fullPath);
+    const viewUrl = `${baseUrl}/api/sales-sheets/open?p=${encodeURIComponent(p)}`;
 
-    await sgMail.send({
-      to,
-      from: {
-        email: fromEmail,
-        name: senderName ? `${senderName} (ET Products)` : "ET Products",
-      },
-      replyTo: senderEmail, // customer replies go to logged-in rep
-      subject: `ET Products Sales Sheet: ${name}`,
-      text: `Attached is the requested ET Products sales sheet: ${name}`,
-      attachments: [
-        {
-          content: buf.toString("base64"),
-          filename: name,
-          type: "application/pdf",
-          disposition: "attachment",
-        },
-      ],
-    });
+    const subject = `ET Products Sales Sheet: ${name}`;
 
-    return NextResponse.json({ ok: true });
+    // ✅ Mail clients treat body as plain text; this reads clean + keeps URL on its own line
+    const bodyLines = [
+      `ET Products sales sheet is ready${senderName ? ` (from ${senderName})` : ""}.`,
+      "",
+      "View PDF:",
+      viewUrl,
+      "",
+      "If you have any questions, just reply to this email.",
+    ];
+
+    const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(
+      subject
+    )}&body=${encodeURIComponent(bodyLines.join("\n"))}`;
+
+    return NextResponse.json({ ok: true, mailto, viewUrl });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message ?? "Unknown error" },

@@ -1,12 +1,24 @@
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 
 type Sheet = {
   name: string;
-  path: string; // ✅ storage path like "sales-sheets/All Dubai Chocolates.pdf"
+  path: string; // storage path like "sales-sheets/All Dubai Chocolates.pdf"
 };
+
+const PROD_BASE_URL = "https://portal.etproductsinc.com";
+
+function isPrivateOrigin(origin: string) {
+  // Matches common private ranges + localhost
+  return (
+    origin.includes("localhost") ||
+    origin.includes("127.0.0.1") ||
+    /^https?:\/\/192\.168\./i.test(origin) ||
+    /^https?:\/\/10\./i.test(origin) ||
+    /^https?:\/\/172\.(1[6-9]|2\d|3[0-1])\./i.test(origin)
+  );
+}
 
 export default function SalesSheetsPage() {
   const [all, setAll] = useState<Sheet[]>([]);
@@ -49,6 +61,16 @@ export default function SalesSheetsPage() {
     return all.filter((x) => x.name.toLowerCase().includes(s));
   }, [q, all]);
 
+  // ✅ Build a clean base URL for email links:
+  // - If you're on a private LAN host, use PROD domain so the email looks professional.
+  // - Otherwise use the current origin.
+  const emailBaseUrl =
+    typeof window !== "undefined"
+      ? isPrivateOrigin(window.location.origin)
+        ? PROD_BASE_URL
+        : window.location.origin
+      : PROD_BASE_URL;
+
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold">Sales Sheets</h1>
@@ -90,15 +112,14 @@ export default function SalesSheetsPage() {
               s.path
             )}`;
 
-            // Since you're currently on LAN, keep your IP here so the email link works for you.
-            // When you go live, swap this to your real domain.
-            const absoluteOpenUrl = `http://192.168.168.135:3000${openUrl}`;
+            // ✅ Email link uses clean domain (prod if you're on LAN)
+            const absoluteOpenUrl = `${emailBaseUrl}${openUrl}`;
 
-          const mailto = `mailto:?subject=${encodeURIComponent(
-  `ET Products Sales Sheet: ${s.name}`
-)}&body=${encodeURIComponent(`${absoluteOpenUrl}`)}`;
-
-
+            // ✅ You asked for ONLY the link in the body
+            const subject = `ET Products Sales Sheet: ${s.name}`;
+            const mailto = `mailto:?subject=${encodeURIComponent(
+              subject
+            )}&body=${encodeURIComponent(absoluteOpenUrl)}`;
 
             return (
               <div

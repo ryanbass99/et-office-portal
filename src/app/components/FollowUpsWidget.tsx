@@ -163,9 +163,6 @@ export default function FollowUpsWidget() {
         }));
 
         // --- Sales Leads follow ups ---
-        // Backwards compatible:
-        // - include docs with status missing (treat as open)
-        // - include docs with status == "open"
         const leadsBase = collection(db, "salesLeads");
 
         const leadsQ =
@@ -285,7 +282,8 @@ export default function FollowUpsWidget() {
                     key={`l_${r.leadId}`}
                     onClick={() =>
                       router.push(
-                        `/sales-leads?leadId=${encodeURIComponent(
+                        // ✅ FIX: your actual route is /salesLeads (camelCase)
+                        `/salesLeads?leadId=${encodeURIComponent(
                           r.leadId
                         )}&open=details`
                       )
