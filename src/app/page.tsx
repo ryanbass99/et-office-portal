@@ -1,7 +1,7 @@
 import OpenSalesOrdersBySalesman from "./components/OpenSalesOrdersBySalesman";
 import TopSalesmanWidget from "@/components/TopSalesmanWidget";
-import TopInactiveStoresWidget from "@/components/TopInactiveStoresWidget";
 import TodaysOpportunitiesCard from "./components/TodaysOpportunitiesCard"; // ✅ fix path
+import FollowUpsWidget from "./components/FollowUpsWidget";
 
 export default function Home() {
   return (
@@ -32,10 +32,8 @@ export default function Home() {
 
         {/* Bottom Right */}
         <div className="bg-white rounded-lg shadow p-4 border border-black">
-          <h2 className="text-lg font-semibold mb-3">
-            Top 50 (2025) — Inactive 60+ Days
-          </h2>
-          <TopInactiveStoresWidget />
+          <h2 className="text-lg font-semibold mb-3">Needs Follow Up (Overdue + Next 7 Days)</h2>
+          <FollowUpsWidget />
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -16,6 +16,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { db, auth } from "@/lib/firebase";
 
 type LeadStatus = "open" | "closed_no_lead" | "closed_account";
@@ -75,6 +76,11 @@ function daysUntil(ts?: Timestamp) {
 }
 
 export default function SalesLeadsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const deepLinkHandledRef = useRef<string | null>(null);
+
   const [form, setForm] = useState({
     customerName: "",
     address: "",
@@ -101,14 +107,15 @@ export default function SalesLeadsPage() {
   // ✅ Editable fields in details panel
   const [detailComments, setDetailComments] = useState("");
   const [detailStatus, setDetailStatus] = useState<LeadStatus>("open");
-  const [detailFollowUpDate, setDetailFollowUpDate] = useState(""); // ✅ new
+  const [detailFollowUpDate, setDetailFollowUpDate] = useState("");
   const [savingDetails, setSavingDetails] = useState(false);
 
   useEffect(() => {
     if (!selectedLead) return;
     setDetailComments(selectedLead.comments ?? "");
     setDetailStatus((selectedLead.status as LeadStatus) || "open");
-    setDetailFollowUpDate(timestampToDateInput(selectedLead.followUpDate)); // ✅ new
+    setDetailFollowUpDate(timestampToDateInput(selectedLead.followUpDate));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLead?.id]);
 
   const handleChange = (
@@ -174,7 +181,7 @@ export default function SalesLeadsPage() {
       await updateDoc(ref, {
         comments: detailComments,
         status: detailStatus,
-        followUpDate: dateInputToTimestamp(detailFollowUpDate), // ✅ update follow up date
+        followUpDate: dateInputToTimestamp(detailFollowUpDate),
         closedAt:
           detailStatus === "open"
             ? null
@@ -238,18 +245,15 @@ export default function SalesLeadsPage() {
 
       const leadsRef = collection(db, "salesLeads");
 
-      // ✅ Hide closed leads by default
-      // We treat missing status as "open" (backwards compatible)
       const q =
-  nextRole === "admin"
-    ? query(leadsRef, orderBy("followUpDate", "asc"), limit(500))
-    : query(
-        leadsRef,
-        where("salesmanId", "==", u.uid),
-        orderBy("followUpDate", "asc"),
-        limit(200)
-      );
-
+        nextRole === "admin"
+          ? query(leadsRef, orderBy("followUpDate", "asc"), limit(500))
+          : query(
+              leadsRef,
+              where("salesmanId", "==", u.uid),
+              orderBy("followUpDate", "asc"),
+              limit(200)
+            );
 
       unsubSnap = onSnapshot(
         q,
@@ -279,21 +283,14 @@ export default function SalesLeadsPage() {
           });
 
           const openOnly = rows.filter(
-  (r) => (r.status as any) === undefined || r.status === "open"
-);
-setLeads(openOnly);
+            (r) => (r.status as any) === undefined || r.status === "open"
+          );
+          setLeads(openOnly);
 
-// If selected lead becomes closed, close the panel
-setSelectedLead((prev) => {
-  if (!prev) return null;
-  const updated = openOnly.find((r) => r.id === prev.id);
-  return updated ?? null;
-});
-
-
+          // If selected lead becomes closed or missing, close the panel
           setSelectedLead((prev) => {
             if (!prev) return null;
-            const updated = rows.find((r) => r.id === prev.id);
+            const updated = openOnly.find((r) => r.id === prev.id);
             return updated ?? null;
           });
 
@@ -311,6 +308,71 @@ setSelectedLead((prev) => {
       unsubAuth();
     };
   }, []);
+
+  // ✅ Deep-link: /sales-leads?leadId=XYZ&open=details
+  useEffect(() => {
+    const open = searchParams.get("open");
+    const leadId = searchParams.get("leadId");
+
+    if (open !== "details" || !leadId) return;
+
+    // prevent re-handling same deep link
+    if (deepLinkHandledRef.current === leadId) return;
+    deepLinkHandledRef.current = leadId;
+
+    // 1) if lead is already loaded, select it
+    const existing = leads.find((l) => l.id === leadId);
+    if (existing) {
+      setSelectedLead(existing);
+      router.replace(pathname);
+      return;
+    }
+
+    // 2) otherwise fetch it directly (admin might click, or it might be offscreen)
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, "salesLeads", leadId));
+        if (!snap.exists()) {
+          router.replace(pathname);
+          return;
+        }
+        const data = snap.data() as any;
+        const fetched: Lead = {
+          id: snap.id,
+          customerName: data.customerName ?? "",
+          address: data.address ?? "",
+          city: data.city ?? "",
+          state: data.state ?? "",
+          zip: data.zip ?? "",
+          phone: data.phone ?? "",
+          managerName: data.managerName ?? "",
+          email: data.email ?? "",
+          followUpDate: data.followUpDate,
+          storeType: data.storeType ?? "",
+          grocerySupplier: data.grocerySupplier ?? "",
+          comments: data.comments ?? "",
+          status: (data.status as LeadStatus) || "open",
+          closedAt: data.closedAt,
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt,
+          salesmanId: data.salesmanId,
+        };
+
+        // If it’s closed, don’t open details (matches your “hide closed” behavior)
+        if (fetched.status !== "open") {
+          router.replace(pathname);
+          return;
+        }
+
+        setSelectedLead(fetched);
+      } catch (e) {
+        console.error("Deep-link lead fetch failed:", e);
+      } finally {
+        router.replace(pathname);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, leads, pathname]);
 
   const isAdmin = useMemo(() => role === "admin", [role]);
 
@@ -520,9 +582,7 @@ setSelectedLead((prev) => {
                         );
                       if (d === 0)
                         return <span className="text-yellow-700">Today</span>;
-                      return (
-                        <span className="text-gray-600">in {d} day(s)</span>
-                      );
+                      return <span className="text-gray-600">in {d} day(s)</span>;
                     })()}
                   </div>
                 </div>

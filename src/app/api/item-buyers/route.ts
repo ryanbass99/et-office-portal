@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getApps, initializeApp, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldPath, getFirestore } from "firebase-admin/firestore";
 
 function initAdmin() {
   if (getApps().length) return;
@@ -42,6 +42,10 @@ type Buyer = {
   tier?: "A" | "B" | "C" | "D";
   sales25?: number;
   salespersonNo?: string;
+
+  // Optional: populated when available on the account
+  buyerEmail?: string | null;
+  buyerName?: string | null;
 };
 
 function normRep(v: any): string {
@@ -49,6 +53,102 @@ function normRep(v: any): string {
   if (!s) return "";
   const digits = s.replace(/\D/g, "");
   return (digits || s).padStart(4, "0");
+}
+
+function pickBuyerEmail(d: any): string | null {
+  const raw =
+    d?.buyerEmail ??
+    d?.buyersEmail ??
+    d?.buyer_email ??
+    d?.buyerEmailAddress ??
+    d?.buyeremail ??
+    null;
+
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return v.length ? v : null;
+}
+
+function pickBuyerName(d: any): string | null {
+  const raw = d?.buyerName ?? d?.buyersName ?? d?.buyer_name ?? null;
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return v.length ? v : null;
+}
+
+function pickItemCodeDesc(d: any): string | null {
+  const raw =
+    d?.itemCodeDesc ??
+    d?.ItemCodeDesc ??
+    d?.item_code_desc ??
+    d?.description ??
+    d?.itemDescription ??
+    d?.desc ??
+    null;
+
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return v.length ? v : null;
+}
+
+async function lookupItemDescription(
+  db: FirebaseFirestore.Firestore,
+  itemCode: string,
+  linesSnap?: FirebaseFirestore.QuerySnapshot<FirebaseFirestore.DocumentData>
+): Promise<string | null> {
+  const code = String(itemCode || "").trim();
+  if (!code) return null;
+
+  // ✅ Fast path: many Sage exports include itemCodeDesc directly on the invoice line
+  // If it's present, use it (no extra reads).
+  if (linesSnap && !linesSnap.empty) {
+    for (const doc of linesSnap.docs.slice(0, 25)) {
+      const desc = pickItemCodeDesc(doc.data());
+      if (desc) return desc;
+    }
+  }
+
+  // Try doc id match first
+  const byId = await db.collection("items").doc(code).get();
+  if (byId.exists) {
+    const desc = pickItemCodeDesc(byId.data());
+    if (desc) return desc;
+  }
+
+  // Fallback: query field match
+  const q = await db.collection("items").where("itemCode", "==", code).limit(1).get();
+  if (!q.empty) {
+    const desc = pickItemCodeDesc(q.docs[0].data());
+    if (desc) return desc;
+  }
+
+  // Fallback: your item docs are often stored as "K604__0010" etc.
+  // Try prefix match on documentId()
+  const start = code + "__";
+  const byIdPrefix = await db
+    .collection("items")
+    .where(FieldPath.documentId(), ">=", start)
+    .where(FieldPath.documentId(), "<", start + "\uf8ff")
+    .limit(1)
+    .get();
+  if (!byIdPrefix.empty) {
+    const desc = pickItemCodeDesc(byIdPrefix.docs[0].data());
+    if (desc) return desc;
+  }
+
+  // Fallback: prefix match on itemCode field
+  const byFieldPrefix = await db
+    .collection("items")
+    .where("itemCode", ">=", start)
+    .where("itemCode", "<", start + "\uf8ff")
+    .limit(1)
+    .get();
+  if (!byFieldPrefix.empty) {
+    const desc = pickItemCodeDesc(byFieldPrefix.docs[0].data());
+    if (desc) return desc;
+  }
+
+  return null;
 }
 
 export async function GET(req: Request) {
@@ -170,6 +270,8 @@ export async function GET(req: Request) {
           salespersonNo,
           sales25,
           tier: tierFromSales25(sales25),
+          buyerEmail: pickBuyerEmail(data),
+          buyerName: pickBuyerName(data),
         };
       });
 
@@ -244,6 +346,8 @@ export async function GET(req: Request) {
             salespersonNo: data?.salespersonNo ?? data?.salesperson ?? "",
             sales25,
             tier: computedTier,
+            buyerEmail: pickBuyerEmail(data),
+            buyerName: pickBuyerName(data),
           });
         }
 
@@ -272,6 +376,8 @@ export async function GET(req: Request) {
             salespersonNo: data?.salespersonNo ?? data?.salesperson ?? "",
             sales25,
             tier: computedTier,
+            buyerEmail: pickBuyerEmail(data),
+            buyerName: pickBuyerName(data),
           });
         }
 
@@ -281,9 +387,12 @@ export async function GET(req: Request) {
       }
     }
 
+    const itemDescription = await lookupItemDescription(db, itemCode, linesSnap);
+
     return NextResponse.json({
       buyers,
       opportunities,
+      itemDescription,
       meta: {
         buyerCount: buyers.length,
         opportunityCount: opportunities.length,

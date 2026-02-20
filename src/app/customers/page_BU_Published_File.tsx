@@ -4,11 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
-  updateDoc,
-  serverTimestamp,
-  onSnapshot,
-  deleteDoc,
-  addDoc,
   getCountFromServer,
   getDoc,
   getDocs,
@@ -18,10 +13,10 @@ import {
   query,
   startAfter,
   where,
-  type DocumentSnapshot
+  type DocumentSnapshot,
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { db } from "@/lib/firebase";
 
 type Customer = {
@@ -58,66 +53,6 @@ type Customer = {
 
   email?: string;
 };
-
-type Salesperson = {
-  uid: string;
-  name: string;
-  salespersonNo: string;
-  role?: string;
-};
-
-
-
-
-type Note = {
-  id: string;
-  text: string;
-  followUpDate?: any;
-  createdAt?: any;
-  updatedAt?: any;
-  createdByUid?: string;
-  createdByName?: string;
-  updatedByUid?: string;
-};
-
-function fmtTs(ts: any) {
-  try {
-    const d = ts?.toDate ? ts.toDate() : ts instanceof Date ? ts : null;
-    if (!d) return "";
-    return d.toLocaleString();
-  } catch {
-    return "";
-  }
-}
-
-function fmtDateOnly(ts: any) {
-  try {
-    const d = ts?.toDate ? ts.toDate() : ts instanceof Date ? ts : null;
-    if (!d) return "";
-    return d.toLocaleDateString();
-  } catch {
-    return "";
-  }
-}
-
-function startOfDay(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-function noteHighlightClass(n: Note) {
-  const raw = (n as any).followUpDate;
-  const d: Date | null = raw?.toDate ? raw.toDate() : raw instanceof Date ? raw : null;
-  if (!d) return "";
-
-  const today = startOfDay(new Date()).getTime();
-  const due = startOfDay(d).getTime();
-  const msDay = 1000 * 60 * 60 * 24;
-  const daysUntil = Math.floor((due - today) / msDay);
-
-  if (daysUntil < 0) return "bg-red-50 border-red-200";
-  if (daysUntil <= 3) return "bg-yellow-50 border-yellow-200";
-  return "";
-}
 
 type CallPrepItem = { itemCode: string; itemCodeDesc?: string | null; qty: number };
 type PitchNextItem = CallPrepItem & { reason: string };
@@ -253,8 +188,6 @@ function getCustomerAgeDays(c: any): number | null {
 export default function CustomersPage() {
   const auth = getAuth();
   const searchParams = useSearchParams();
-  const router = useRouter();
-  const pathname = usePathname();
 
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -264,14 +197,6 @@ export default function CustomersPage() {
 
   const [search, setSearch] = useState("");
   const [salespersonNo, setSalespersonNo] = useState<string>("");
-
-  // ✅ role + admin-only rep switcher
-  const [role, setRole] = useState<string>("");
-  const isAdmin = role === "admin";
-
-  const [salespeople, setSalespeople] = useState<Salesperson[]>([]);
-  const [selectedSalespersonNo, setSelectedSalespersonNo] = useState<string>("");
-
 
   const [error, setError] = useState<string>("");
   const [totalForRep, setTotalForRep] = useState<number | null>(null);
@@ -329,51 +254,6 @@ export default function CustomersPage() {
   const [callPrepError, setCallPrepError] = useState<string | null>(null);
   const [callPrepData, setCallPrepData] = useState<CallPrepResponse | null>(null);
 
-
-// ---- Notes drawer ----
-const [notesOpen, setNotesOpen] = useState(false);
-const [notesFor, setNotesFor] = useState<Customer | null>(null);
-const [notesLoading, setNotesLoading] = useState(false);
-const [notesError, setNotesError] = useState<string | null>(null);
-const [notesRows, setNotesRows] = useState<Note[]>([]);
-const [newNoteText, setNewNoteText] = useState<string>("");
-const [newNoteFollowUp, setNewNoteFollowUp] = useState<string>("");
-const [notesSaving, setNotesSaving] = useState<boolean>(false);
-const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-const [editingNoteText, setEditingNoteText] = useState<string>("");
-const [editingNoteFollowUp, setEditingNoteFollowUp] = useState<string>("");
-const [notesCountByCustomerNo, setNotesCountByCustomerNo] = useState<Record<string, number>>({});
-
-async function refreshNotesCount(customerNo: string) {
-  const key = String(customerNo || "").trim();
-  if (!key) return;
-
-  try {
-    const colRef = collection(db, "customers", key, "notes");
-    const snap = await getCountFromServer(colRef);
-    const count = snap.data().count || 0;
-
-    setNotesCountByCustomerNo((prev) => {
-      // Keep other customers’ counts intact
-      if (prev[key] === count) return prev;
-      return { ...prev, [key]: count };
-    });
-  } catch (e) {
-    console.error("refreshNotesCount failed", key, e);
-  }
-}
-
-function closeNotes() {
-  const key = String(notesFor?.customerNo || "").trim();
-  setNotesOpen(false);
-  setNotesFor(null);
-
-  // Re-check count so the green pill updates immediately after closing
-  if (key) refreshNotesCount(key);
-}
-
-
-
   async function openCallPrep(c: Customer) {
     setCallPrepOpen(true);
     setCallPrepFor(c);
@@ -396,163 +276,7 @@ function closeNotes() {
     }
   }
 
-
-function openNotes(c: Customer) {
-  setNotesOpen(true);
-  setNotesFor(c);
-  setNotesError(null);
-  setNotesRows([]);
-  setNewNoteText("");
-  setNewNoteFollowUp("");
-  setEditingNoteId(null);
-  setEditingNoteText("");
-  setEditingNoteFollowUp("");
-}
-
-
   const searchTimer = useRef<any>(null);
-
-
-// Notes realtime subscription (customers/{customerNo}/notes)
-useEffect(() => {
-  if (!notesOpen || !notesFor?.customerNo) {
-    setNotesRows([]);
-    setNotesLoading(false);
-    return;
-  }
-
-  setNotesLoading(true);
-  setNotesError(null);
-
-  const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
-  const q = query(notesRef, orderBy("createdAt", "desc"));
-
-  const unsub = onSnapshot(
-    q,
-    (snap) => {
-      const rows: Note[] = snap.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as any),
-      }));
-      setNotesRows(rows);
-      setNotesLoading(false);
-    },
-    (err) => {
-      console.error("Notes snapshot error:", err);
-      setNotesError(err?.message ?? "Failed to load notes");
-      setNotesLoading(false);
-    }
-  );
-
-  return () => unsub();
-}, [notesOpen, notesFor?.customerNo]);
-
-async function addNote() {
-  const text = newNoteText.trim();
-  if (!text || !notesFor?.customerNo) return;
-
-  const user = auth.currentUser;
-  if (!user) {
-    alert("Not signed in.");
-    return;
-  }
-
-  setNotesSaving(true);
-  try {
-    const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
-    await addDoc(notesRef, {
-      text,
-      ...(newNoteFollowUp.trim()
-        ? { followUpDate: new Date(`${newNoteFollowUp}T00:00:00`) }
-        : {}),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      createdByUid: user.uid,
-      createdByName: user.displayName || user.email || "",
-      updatedByUid: user.uid,
-    });
-    // ✅ make Notes pill go green immediately
-    setNotesCountByCustomerNo((prev) => {
-      const key = String(notesFor.customerNo || "").trim();
-      if (!key) return prev;
-      const nextCount = Math.max(1, (prev[key] || 0) + 1);
-      return { ...prev, [key]: nextCount };
-    });
-    refreshNotesCount(notesFor.customerNo);
-
-    setNewNoteText("");
-    setNewNoteFollowUp("");
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to save note");
-  } finally {
-    setNotesSaving(false);
-  }
-}
-
-function startEditNote(n: Note) {
-  setEditingNoteId(n.id);
-  setEditingNoteText(n.text || "");
-  const raw = (n as any).followUpDate;
-  const d: Date | null = raw?.toDate ? raw.toDate() : raw instanceof Date ? raw : null;
-  setEditingNoteFollowUp(d ? d.toISOString().slice(0, 10) : "");
-}
-
-function cancelEditNote() {
-  setEditingNoteId(null);
-  setEditingNoteText("");
-  setEditingNoteFollowUp("");
-}
-
-async function saveEditNote() {
-  if (!notesFor?.customerNo || !editingNoteId) return;
-  const text = editingNoteText.trim();
-  if (!text) return;
-
-  const user = auth.currentUser;
-  if (!user) {
-    alert("Not signed in.");
-    return;
-  }
-
-  setNotesSaving(true);
-  try {
-    const ref = doc(db, "customers", notesFor.customerNo, "notes", editingNoteId);
-    await updateDoc(ref, {
-      text,
-      followUpDate: editingNoteFollowUp.trim()
-        ? new Date(`${editingNoteFollowUp}T00:00:00`)
-        : null,
-      updatedAt: serverTimestamp(),
-      updatedByUid: user.uid,
-    });
-    cancelEditNote();
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to update note");
-  } finally {
-    setNotesSaving(false);
-  }
-}
-
-async function deleteNote(noteId: string) {
-  if (!notesFor?.customerNo) return;
-  if (!confirm("Delete this note?")) return;
-
-  setNotesSaving(true);
-  try {
-    const ref = doc(db, "customers", notesFor.customerNo, "notes", noteId);
-    await deleteDoc(ref);
-    refreshNotesCount(notesFor.customerNo);
-    if (editingNoteId === noteId) cancelEditNote();
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to delete note");
-  } finally {
-    setNotesSaving(false);
-  }
-}
-
 
   function mapSnap(snap: any): Customer[] {
     return snap.docs.map((d: any) => {
@@ -744,10 +468,7 @@ async function deleteNote(noteId: string) {
 
       try {
         const userSnap = await getDoc(doc(db, "users", user.uid));
-        const u = (userSnap.data() as any) || {};
-        setRole(String(u.role ?? ""));
-
-        const sp = normalizeSalespersonNo(String(u.salesperson ?? ""));
+        const sp = normalizeSalespersonNo(String((userSnap.data() as any)?.salesperson ?? ""));
         setSalespersonNo(sp);
 
         if (!sp) {
@@ -773,80 +494,6 @@ async function deleteNote(noteId: string) {
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ✅ Admin-only: load salespeople for rep pills
-  useEffect(() => {
-    if (!isAdmin) {
-      setSalespeople([]);
-      setSelectedSalespersonNo("");
-      return;
-    }
-
-    (async () => {
-      try {
-        // NOTE: roles can vary. For admin-only rep switcher, we just pull any user that has a salesperson code.
-        const snap = await getDocs(collection(db, "users"));
-
-        const rows: Salesperson[] = snap.docs
-          .map((d) => {
-            const v = d.data() as any;
-
-            // Your Firestore field is `salesperson` (e.g. "0001")
-            const sp = normalizeSalespersonNo(String(v.salesperson ?? ""));
-            if (!sp) return null;
-
-            // Skip admins from the list (optional)
-            const r = String(v.role ?? "").toLowerCase();
-            if (r === "admin") return null;
-
-            const name = String(v.name ?? v.displayName ?? v.fullName ?? v.email ?? sp).trim();
-            return { uid: d.id, name: name || sp, salespersonNo: sp, role: v.role };
-          })
-          .filter(Boolean) as Salesperson[];
-
-        rows.sort((a, b) => a.name.localeCompare(b.name));
-        setSalespeople(rows);
-      } catch (e) {
-        console.error(e);
-        setSalespeople([]);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
-
-
-  // ✅ Admin-only: switch rep when a pill is clicked
-  useEffect(() => {
-    if (!isAdmin) return;
-
-    const sp = normalizeSalespersonNo(selectedSalespersonNo);
-    if (!sp) return;
-
-    (async () => {
-      setLoading(true);
-      setError("");
-      setAllRows([]);
-      setVisibleCount(PAGE_SIZE);
-      setTotalForRep(null);
-
-      try {
-        setSalespersonNo(sp);
-        await fetchAllForRep(sp);
-      } catch (e: any) {
-        console.error(e);
-        setError(
-          e?.code
-            ? `${e.code}: ${e.message ?? ""}`
-            : String(e?.message ?? e ?? "Unknown error")
-        );
-        setAllRows([]);
-      } finally {
-        setLoading(false);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSalespersonNo, isAdmin]);
-
 
   // ✅ quick preset from Sales Tools: /customers?quick=whitespace&top50=1&item=K411
   useEffect(() => {
@@ -899,48 +546,6 @@ async function deleteNote(noteId: string) {
     setInvertItemFilter(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
-
-  // ✅ Deep-link: /customers?customerNo=XXXX&open=notes
-  // Opens Notes drawer directly (used by Dashboard follow-ups)
-  useEffect(() => {
-    const open = (searchParams.get("open") || "").trim();
-    const customerNo = (searchParams.get("customerNo") || "").trim();
-
-    if (open !== "notes" || !customerNo) return;
-
-    // If we already have the customer loaded, use it.
-    const found =
-      allRows.find((r) => String(r.customerNo || "").trim() === customerNo) || null;
-
-    async function run() {
-      try {
-        if (found) {
-          openNotes(found);
-        } else {
-          // Fallback: fetch customer doc to get a name, then open Notes
-          const snap = await getDoc(doc(db, "customers", customerNo));
-          const data = snap.exists() ? (snap.data() as any) : {};
-          openNotes({
-            id: customerNo,
-            customerNo,
-            customerName: data.customerName || data.customer || customerNo,
-          } as Customer);
-        }
-      } finally {
-        // Clean URL so refresh doesn't re-open drawer
-        const next = new URLSearchParams(searchParams.toString());
-        next.delete("open");
-        next.delete("customerNo");
-        const qs = next.toString();
-        router.replace(qs ? `${pathname}?${qs}` : pathname);
-      }
-    }
-
-    // Avoid double-open if already open for same customer
-    if (!notesOpen || notesFor?.customerNo !== customerNo) run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, allRows]);
-
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -1097,49 +702,6 @@ async function deleteNote(noteId: string) {
     () => topRows.slice(0, visibleCount),
     [topRows, visibleCount]
   );
-
-  // Notes pill: show green if customer has at least 1 note
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadNoteCounts() {
-      try {
-        const customerNos = (visibleRows || [])
-          .map((c) => String((c as any).customerNo || "").trim())
-          .filter(Boolean);
-
-        if (customerNos.length === 0) {
-          if (!cancelled) setNotesCountByCustomerNo({});
-          return;
-        }
-
-        const entries = await Promise.all(
-          customerNos.map(async (customerNo) => {
-            try {
-              const colRef = collection(db, "customers", customerNo, "notes");
-              const snap = await getCountFromServer(colRef);
-              return [customerNo, snap.data().count] as const;
-            } catch (e) {
-              console.error("notes count failed", customerNo, e);
-              return [customerNo, 0] as const;
-            }
-          })
-        );
-
-        if (cancelled) return;
-        const next: Record<string, number> = {};
-        for (const [k, v] of entries) next[k] = v;
-        setNotesCountByCustomerNo(next);
-      } catch (e) {
-        console.error("loadNoteCounts failed", e);
-      }
-    }
-
-    loadNoteCounts();
-    return () => {
-      cancelled = true;
-    };
-  }, [visibleRows]);
 
   const hasMore = !top50Only && visibleCount < topRows.length;
 
@@ -1450,46 +1012,6 @@ async function deleteNote(noteId: string) {
                 </button>
               </div>
 
-              {/* Admin-only: Salesman filter pills */}
-              {isAdmin ? (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {salespeople.length ? (
-                    <>
-                      <button
-                        type="button"
-                        className={`px-3 py-1 rounded-full border text-xs ${
-                          !selectedSalespersonNo
-                            ? "bg-gray-900 text-white border-gray-900"
-                            : "bg-white hover:bg-gray-50"
-                        }`}
-                        onClick={() => setSelectedSalespersonNo("")}
-                        title="Clear salesman filter"
-                      >
-                        All Salesmen
-                      </button>
-
-                      {salespeople.map((sp) => (
-                        <button
-                          key={sp.uid}
-                          type="button"
-                          className={`px-3 py-1 rounded-full border text-xs ${
-                            selectedSalespersonNo === sp.salespersonNo
-                              ? "bg-gray-900 text-white border-gray-900"
-                              : "bg-white hover:bg-gray-50"
-                          }`}
-                          onClick={() => setSelectedSalespersonNo(sp.salespersonNo)}
-                          title={`Salesperson #${sp.salespersonNo}`}
-                        >
-                          {sp.name}
-                        </button>
-                      ))}
-                    </>
-                  ) : (
-                    <span className="text-xs text-gray-500">No salesmen found.</span>
-                  )}
-                </div>
-              ) : null}
-
               {itemError ? (
                 <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
                   {itemError}
@@ -1640,25 +1162,6 @@ async function deleteNote(noteId: string) {
                               Call Prep
                             </button>
 
-                            <a
-                              href={`/customers/${encodeURIComponent(
-                                String(c.customerNo ?? "").trim()
-                              )}/invoices`}
-                              className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
-                              title="View invoices"
-                            >
-                              Invoices
-                            </a>
-
-                            <button
-                              type="button"
-                              onClick={() => openNotes(c)}
-                              className={`px-1.5 py-0.5 rounded border text-[10px] ${((notesCountByCustomerNo[String(c.customerNo ?? "").trim()] || 0) > 0) ? "bg-green-100 border-green-400 text-green-900" : "bg-white text-gray-700 hover:bg-gray-50"}`}
-                              title="Notes"
-                            >
-                              Notes
-                            </button>
-
                             {c.creditHoldBool ? (
                               <span className="px-1.5 py-0.5 rounded border text-[10px] bg-red-50 border-red-200 text-red-700">
                                 CH
@@ -1727,9 +1230,6 @@ async function deleteNote(noteId: string) {
                     {callPrepFor.customerNo}
                   </div>
                 ) : null}
-
-
-
               </div>
               <button
                 type="button"
@@ -1878,170 +1378,6 @@ async function deleteNote(noteId: string) {
           </div>
         </div>
       ) : null}
-
-{/* Notes Drawer */}
-{notesOpen ? (
-  <div className="fixed inset-0 z-50">
-    <button
-      type="button"
-      className="absolute inset-0 bg-black/30"
-      aria-label="Close notes"
-      onClick={closeNotes}
-    />
-    <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-xl border-l flex flex-col">
-      <div className="p-3 border-b flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-semibold leading-5 truncate">
-            Notes{notesFor ? ` • ${notesFor.customerName}` : ""}
-          </div>
-          {notesFor ? (
-            <div className="text-xs text-gray-500 truncate">
-              {notesFor.customerNo}
-            </div>
-          ) : null}
-        </div>
-        <button
-          type="button"
-          className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-sm"
-          onClick={closeNotes}
-        >
-          ✕
-        </button>
-      </div>
-
-      <div className="p-3 border-b space-y-2">
-        <div className="text-xs font-semibold text-gray-700">Add Note</div>
-        <textarea
-          className="w-full border rounded px-2 py-2 text-sm"
-          rows={4}
-          placeholder="Type a note..."
-          value={newNoteText}
-          onChange={(e) => setNewNoteText(e.target.value)}
-        />
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs text-gray-600">Follow up date (optional)</div>
-          <input
-            type="date"
-            className="border rounded px-2 py-1 text-sm"
-            value={newNoteFollowUp}
-            onChange={(e) => setNewNoteFollowUp(e.target.value)}
-          />
-        </div>
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={addNote}
-            disabled={notesSaving || !newNoteText.trim()}
-            className={`px-3 py-2 rounded text-sm text-white ${
-              notesSaving || !newNoteText.trim()
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-gray-900 hover:bg-gray-800"
-            }`}
-          >
-            {notesSaving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-
-      <div className="p-3 overflow-auto space-y-3">
-        {notesLoading ? (
-          <div className="text-sm text-gray-600">Loading…</div>
-        ) : notesError ? (
-          <div className="text-sm text-red-700">{notesError}</div>
-        ) : notesRows.length === 0 ? (
-          <div className="text-sm text-gray-600">No notes yet.</div>
-        ) : (
-          notesRows.map((n) => {
-            const isEditing = editingNoteId === n.id;
-            const hl = noteHighlightClass(n);
-            return (
-              <div key={n.id} className={`rounded border p-2 ${hl}`}> 
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] text-gray-500">
-                      {fmtTs(n.createdAt)}
-                      {n.createdByName ? ` • ${n.createdByName}` : ""}
-                      {n.updatedAt ? ` • Updated ${fmtTs(n.updatedAt)}` : ""}
-                    </div>
-                    {(n as any).followUpDate ? (
-                      <div className="text-[11px] text-gray-700 mt-0.5">
-                        Follow up: <span className="font-semibold">{fmtDateOnly((n as any).followUpDate)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                  {!isEditing ? (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                        onClick={() => startEditNote(n)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                        onClick={() => deleteNote(n.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-
-                {!isEditing ? (
-                  <div className="mt-2 text-sm whitespace-pre-wrap break-words">
-                    {n.text}
-                  </div>
-                ) : (
-                  <div className="mt-2 space-y-2">
-                    <textarea
-                      className="w-full border rounded px-2 py-2 text-sm"
-                      rows={4}
-                      value={editingNoteText}
-                      onChange={(e) => setEditingNoteText(e.target.value)}
-                    />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-gray-600">Follow up date (optional)</div>
-                      <input
-                        type="date"
-                        className="border rounded px-2 py-1 text-sm"
-                        value={editingNoteFollowUp}
-                        onChange={(e) => setEditingNoteFollowUp(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        className="px-3 py-1.5 rounded border bg-white hover:bg-gray-50 text-sm"
-                        onClick={cancelEditNote}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        className={`px-3 py-1.5 rounded text-sm text-white ${
-                          notesSaving || !editingNoteText.trim()
-                            ? "bg-gray-400 cursor-not-allowed"
-                            : "bg-gray-900 hover:bg-gray-800"
-                        }`}
-                        disabled={notesSaving || !editingNoteText.trim()}
-                        onClick={saveEditNote}
-                      >
-                        {notesSaving ? "Saving..." : "Save"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  </div>
-) : null}
-
     </>
   );
 }

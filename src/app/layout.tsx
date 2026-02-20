@@ -86,7 +86,7 @@ export default function RootLayout({
             <div className="flex-1 flex flex-col">
               {/* Top Header */}
               <header className="h-16 bg-white border-b flex items-center justify-between px-10">
-                <div className="font-semibold">ET Produts Internal Portal</div>
+                <div className="font-semibold">ET Products Internal Portal</div>
                 <div className="flex items-center gap-4">
                   <UserBadge />
                   <SignOutButton />

@@ -55,7 +55,7 @@ export default function AdminUsagePage() {
 
         const idToken = await user.getIdToken(true);
 
-        const res = await fetch(`/api/admin/usage?days=${days}`, {
+        const res = await fetch(`/api/admin/usage?start=${startDate}&end=${endDate}&days=${days}`, {
           headers: { Authorization: `Bearer ${idToken}` },
         });
 
@@ -78,7 +78,7 @@ export default function AdminUsagePage() {
     return () => {
       if (unsub) unsub();
     };
-  }, [days]);
+  }, [startDate, endDate, days]);
 
   if (loading) return <div className="p-6">Loading…</div>;
   if (err) return <div className="p-6 text-red-600">{err}</div>;

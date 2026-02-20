@@ -16,6 +16,14 @@ export default function AdminPage() {
             <span className="font-medium">Usage Dashboard</span>
             <span className="text-gray-500">→</span>
           </Link>
+
+          <Link
+            href="/admin/open-sales-orders"
+            className="inline-flex items-center justify-between rounded border px-4 py-3 hover:bg-gray-50"
+          >
+            <span className="font-medium">Open Sales Orders</span>
+            <span className="text-gray-500">→</span>
+          </Link>
         </div>
       </div>
     </div>

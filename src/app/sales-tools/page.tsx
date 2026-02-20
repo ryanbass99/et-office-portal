@@ -18,6 +18,7 @@ type Buyer = {
 export default function SalesToolsPage() {
   const [itemCode, setItemCode] = useState("");
   const [submittedItemCode, setSubmittedItemCode] = useState<string | null>(null);
+  const [itemDesc, setItemDesc] = useState<string | null>(null);
   const [repNo, setRepNo] = useState<string | null>(null);
 
   const [buyers, setBuyers] = useState<Buyer[]>([]);
@@ -59,6 +60,7 @@ export default function SalesToolsPage() {
     }
 
     setSubmittedItemCode(code);
+    setItemDesc(null);
 
     // reset UI state
     setBuyers([]);
@@ -80,6 +82,9 @@ export default function SalesToolsPage() {
       const data = await res.json();
 
       if (!res.ok) throw new Error(data?.error || "Failed to load buyers.");
+      if (typeof data?.itemDescription === "string" && data.itemDescription.trim()) {
+        setItemDesc(data.itemDescription.trim());
+      }
       setBuyers(Array.isArray(data?.buyers) ? data.buyers : []);
     } catch (e: any) {
       setBuyersError(e?.message || "Unknown error.");
@@ -114,6 +119,10 @@ export default function SalesToolsPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to load opportunities.");
 
+      if (typeof data?.itemDescription === "string" && data.itemDescription.trim()) {
+        setItemDesc(data.itemDescription.trim());
+      }
+
       setOpportunities(Array.isArray(data?.opportunities) ? data.opportunities : []);
     } catch (e: any) {
       setBuyersError(e?.message || "Unknown error.");
@@ -125,6 +134,7 @@ export default function SalesToolsPage() {
   function onClear() {
     setItemCode("");
     setSubmittedItemCode(null);
+    setItemDesc(null);
     setBuyers([]);
     setOpportunities([]);
     setSelectedBuyer(null);
@@ -277,8 +287,22 @@ export default function SalesToolsPage() {
                     key={o.customerNo}
                     className="rounded border border-gray-200 px-3 py-2"
                   >
-                    <div className="text-sm font-semibold">
-                      {o.name?.trim() ? o.name : `Customer ${o.customerNo}`}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-sm font-semibold">
+                        {o.name?.trim() ? o.name : `Customer ${o.customerNo}`}
+                      </div>
+
+                      {o.buyerEmail ? (
+                        <a
+                          href={`mailto:${o.buyerEmail}?subject=${encodeURIComponent(
+                            `${submittedItemCode ?? ""} ${itemDesc ?? ""} Opportunity Buy!`.replace(/\s+/g, " ").trim()
+                          )}`}
+                          className="shrink-0 rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-900 hover:bg-gray-50"
+                          title={o.buyerEmail}
+                        >
+                          Email Buyer
+                        </a>
+                      ) : null}
                     </div>
                     <div className="text-xs text-gray-600">
                       {o.city ? `${o.city}, ` : ""}
