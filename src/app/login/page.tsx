@@ -28,19 +28,20 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center">
-      <div className="w-full max-w-md bg-white rounded-lg shadow p-8">
+    <div className="flex min-h-dvh items-center justify-center px-4 py-8">
+      <div className="w-full max-w-md bg-white rounded-lg shadow p-6 md:p-8">
         <h1 className="text-2xl font-bold mb-6">Sign in</h1>
 
         <form onSubmit={onSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">Email</label>
             <input
-              className="w-full border rounded px-3 py-2"
+              className="w-full border rounded-md px-3 h-12 text-base focus:outline-none focus:ring-2 focus:ring-gray-900"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
+              inputMode="email"
               required
             />
           </div>
@@ -48,7 +49,7 @@ export default function LoginPage() {
           <div>
             <label className="block text-sm font-medium mb-1">Password</label>
             <input
-              className="w-full border rounded px-3 py-2"
+              className="w-full border rounded-md px-3 h-12 text-base focus:outline-none focus:ring-2 focus:ring-gray-900"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -57,14 +58,12 @@ export default function LoginPage() {
             />
           </div>
 
-          {error ? (
-            <div className="text-sm text-red-600">{error}</div>
-          ) : null}
+          {error ? <div className="text-sm text-red-600">{error}</div> : null}
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-gray-900 text-white rounded px-3 py-2 hover:bg-gray-800 disabled:opacity-60"
+            className="w-full h-12 rounded-md bg-gray-900 text-white font-semibold hover:bg-gray-800 disabled:opacity-60"
           >
             {loading ? "Signing in..." : "Sign in"}
           </button>
