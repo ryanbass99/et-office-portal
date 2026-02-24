@@ -5,6 +5,13 @@ import { useEffect, useMemo, useState } from "react";
 type Sheet = {
   name: string;
   path: string; // storage path like "sales-sheets/All Dubai Chocolates.pdf"
+
+  // Optional metadata (depends on what /api/sales-sheets returns)
+  updatedAt?: any;
+  updated?: any;
+  lastModified?: any;
+  timeCreated?: any;
+  createdAt?: any;
 };
 
 const PROD_BASE_URL = "https://portal.etproductsinc.com";
@@ -17,6 +24,48 @@ function isPrivateOrigin(origin: string) {
     /^https?:\/\/192\.168\./i.test(origin) ||
     /^https?:\/\/10\./i.test(origin) ||
     /^https?:\/\/172\.(1[6-9]|2\d|3[0-1])\./i.test(origin)
+  );
+}
+
+function toMillis(v: any): number {
+  if (!v) return 0;
+
+  // Firestore Timestamp
+  if (typeof v === "object" && typeof v.toMillis === "function") {
+    try {
+      return v.toMillis();
+    } catch {
+      return 0;
+    }
+  }
+
+  // Date object
+  if (v instanceof Date) return v.getTime();
+
+  // number epoch (seconds or ms)
+  if (typeof v === "number") {
+    // if it's in seconds, convert to ms
+    return v < 10_000_000_000 ? v * 1000 : v;
+  }
+
+  // string (ISO, RFC, etc.)
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  return 0;
+}
+
+function modifiedMillis(s: Sheet): number {
+  // Try common fields that APIs/storage metadata might return
+  return (
+    toMillis((s as any).updatedAt) ||
+    toMillis((s as any).updated) ||
+    toMillis((s as any).lastModified) ||
+    toMillis((s as any).timeCreated) ||
+    toMillis((s as any).createdAt) ||
+    0
   );
 }
 
@@ -57,8 +106,17 @@ export default function SalesSheetsPage() {
 
   const items = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return all;
-    return all.filter((x) => x.name.toLowerCase().includes(s));
+    const filtered = !s
+      ? all
+      : all.filter((x) => x.name.toLowerCase().includes(s));
+
+    // ✅ Newest first (date modified/updated)
+    return [...filtered].sort((a, b) => {
+      const bt = modifiedMillis(b);
+      const at = modifiedMillis(a);
+      if (bt !== at) return bt - at;
+      return a.name.localeCompare(b.name);
+    });
   }, [q, all]);
 
   // ✅ Build a clean base URL for email links:

@@ -105,7 +105,7 @@ export default function CustomerInvoicesPage() {
       }));
 
       // Only show lines with a positive extension amount (hides duplicate $0 rows)
-      const filtered = rows.filter((l) => (Number(l.extensionAmt) || 0) > 0);
+      const filtered = rows.filter((l) => Math.abs(Number(l.extensionAmt) || 0) > 0.0001);
 
       filtered.sort((a, b) => {
         const ad = (a.itemCodeDesc || "").toLowerCase();

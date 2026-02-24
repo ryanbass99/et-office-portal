@@ -1,18 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import NextBestProductCard from "../components/NextBestProductCard";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  query,
-  where,
-} from "firebase/firestore";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
-import { db } from "@/lib/firebase";
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 
 type Buyer = {
   customerNo: string;
@@ -25,148 +16,122 @@ type Buyer = {
   buyerEmail?: string;
 };
 
-type ItemSuggestion = {
-  itemCode: string;
-  itemCodeDesc?: string;
-};
-
-// Normalize user input into the exact token we want to `array-contains`.
-// - Uses the LAST word so "pokemon display" still works.
-// - Uppercases
-// - Removes punctuation
-function toSearchToken(input: string) {
-  const raw = (input || "").trim();
-  if (!raw) return "";
-
-  const parts = raw.split(/\s+/).filter(Boolean);
-  const last = parts[parts.length - 1] || "";
-
-  // keep only A-Z/0-9 to match typical prefix arrays
-  const tokenUpper = last.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return tokenUpper.slice(0, 24);
-}
-
 export default function SalesToolsPage() {
   const [itemCode, setItemCode] = useState("");
   const [itemSearch, setItemSearch] = useState("");
-  const [itemSuggestions, setItemSuggestions] = useState<ItemSuggestion[]>([]);
+  const [itemSuggestions, setItemSuggestions] = useState<{ itemCode: string; itemCodeDesc?: string }[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-
   const [submittedItemCode, setSubmittedItemCode] = useState<string | null>(null);
   const [itemDesc, setItemDesc] = useState<string | null>(null);
   const [repNo, setRepNo] = useState<string | null>(null);
 
   const [buyers, setBuyers] = useState<Buyer[]>([]);
   const [opportunities, setOpportunities] = useState<Buyer[]>([]);
+
   const [selectedBuyer, setSelectedBuyer] = useState<Buyer | null>(null);
 
   const [loadingBuyers, setLoadingBuyers] = useState(false);
   const [loadingOpps, setLoadingOpps] = useState(false);
+
   const [buyersError, setBuyersError] = useState<string | null>(null);
 
   const canSearch = useMemo(() => itemCode.trim().length > 0, [itemCode]);
 
-  const tokenUpper = useMemo(() => toSearchToken(itemSearch), [itemSearch]);
-  const canSearchByName = useMemo(() => tokenUpper.length > 1, [tokenUpper]);
+  const canSearchByName = useMemo(() => itemSearch.trim().length > 1, [itemSearch]);
 
-  const mountedRef = useRef(true);
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+    async function loadRep() {
+      const user = auth.currentUser;
+      if (!user) return;
 
-  // Load rep number from /users/{uid}.salesperson
-  useEffect(() => {
-    const auth = getAuth();
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        if (!mountedRef.current) return;
-        setRepNo(null);
-        return;
-      }
-
-      try {
-        const snap = await getDoc(doc(db, "users", user.uid));
-        if (!mountedRef.current) return;
-
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          if (data?.salesperson) {
-            setRepNo(String(data.salesperson).padStart(4, "0"));
-          }
+      const snap = await getDoc(doc(db, "users", user.uid));
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        if (data?.salesperson) {
+          setRepNo(String(data.salesperson).padStart(4, "0"));
         }
-      } catch {
-        // ignore
       }
-    });
+    }
 
-    return () => unsub();
+    loadRep();
   }, []);
 
-  // Name search suggestions (itemsMaster.searchPrefixes)
+  // Search-by-name suggestions
+  // NOTE: Firestore field names are case-sensitive. Your Sage imports commonly use `ItemCodeDesc`.
+  // We'll try `ItemCodeDesc` first, then fall back to `itemCodeDesc`.
   useEffect(() => {
-    if (!canSearchByName) {
+    const qRaw = itemSearch.trim();
+    if (qRaw.length < 2) {
       setItemSuggestions([]);
       setLoadingSuggestions(false);
       return;
     }
 
     let cancelled = false;
-
     const handle = setTimeout(async () => {
       setLoadingSuggestions(true);
-
       try {
-        const itemsRef = collection(db, "itemsMaster");
-        const q = query(
-          itemsRef,
-          where("searchPrefixes", "array-contains", tokenUpper),
-          limit(25)
-        );
+        const qUpper = qRaw.toUpperCase();
+        const itemsRef = collection(db, "items");
 
-        const snap = await getDocs(q);
+        async function runPrefixQuery(field: string) {
+          const q1 = query(
+            itemsRef,
+            where(field as any, ">=", qUpper),
+            where(field as any, "<=", qUpper + "\uf8ff"),
+            orderBy(field as any),
+            limit(25)
+          );
+          return await getDocs(q1);
+        }
 
-        const rows: ItemSuggestion[] = [];
+        // 1) Try ItemCodeDesc
+        let snap;
+        try {
+          snap = await runPrefixQuery("ItemCodeDesc");
+        } catch {
+          snap = await runPrefixQuery("itemCodeDesc");
+        }
+
+        // 2) If query ran but returned nothing, try the other casing too.
+        if (snap.empty) {
+          try {
+            const alt = await runPrefixQuery("itemCodeDesc");
+            if (!alt.empty) snap = alt;
+          } catch {
+            // ignore
+          }
+        }
+
+        const rows: { itemCode: string; itemCodeDesc?: string }[] = [];
         snap.forEach((d) => {
           const data = d.data() as any;
-
-          // doc id is also the item code in your data (e.g., K604)
           const code = String(data.itemCode || data.ItemCode || d.id || "").trim();
           if (!code) return;
-
-          const desc =
-            String(
-              data.itemCodeDesc ||
-                data.ItemCodeDesc ||
-                data.description ||
-                data.desc ||
-                ""
-            ).trim() || undefined;
-
-          rows.push({ itemCode: code, itemCodeDesc: desc });
+          rows.push({
+            itemCode: code,
+            itemCodeDesc:
+              String(data.ItemCodeDesc || data.itemCodeDesc || data.description || "").trim() ||
+              undefined,
+          });
         });
 
-        rows.sort((a, b) => a.itemCode.localeCompare(b.itemCode));
-
-        if (!cancelled && mountedRef.current) setItemSuggestions(rows);
+        if (!cancelled) setItemSuggestions(rows);
       } catch {
-        if (!cancelled && mountedRef.current) setItemSuggestions([]);
+        if (!cancelled) setItemSuggestions([]);
       } finally {
-        if (!cancelled && mountedRef.current) setLoadingSuggestions(false);
+        if (!cancelled) setLoadingSuggestions(false);
       }
-    }, 150);
+    }, 250);
 
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [canSearchByName, tokenUpper]);
+  }, [itemSearch]);
 
-  // ✅ allow forcedCode so clicking a suggestion can auto-run search immediately
-  async function onSearch(forcedCode?: string) {
-    const code = (forcedCode ?? itemCode).trim().toUpperCase();
+  async function onSearch() {
+    const code = itemCode.trim().toUpperCase();
     if (!code) return;
 
     if (!repNo) {
@@ -178,9 +143,12 @@ export default function SalesToolsPage() {
     setItemDesc(null);
     setItemSuggestions([]);
     setLoadingSuggestions(false);
+
+    // reset UI state
     setBuyers([]);
     setOpportunities([]);
     setSelectedBuyer(null);
+
     setBuyersError(null);
     setLoadingBuyers(true);
     setLoadingOpps(false);
@@ -192,13 +160,13 @@ export default function SalesToolsPage() {
         )}`,
         { cache: "no-store" }
       );
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Failed to load buyers.");
 
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data?.error || "Failed to load buyers.");
       if (typeof data?.itemDescription === "string" && data.itemDescription.trim()) {
         setItemDesc(data.itemDescription.trim());
       }
-
       setBuyers(Array.isArray(data?.buyers) ? data.buyers : []);
     } catch (e: any) {
       setBuyersError(e?.message || "Unknown error.");
@@ -224,11 +192,12 @@ export default function SalesToolsPage() {
       const res = await fetch(
         `/api/item-buyers?itemCode=${encodeURIComponent(
           submittedItemCode
-        )}&onePerTier=1&selectedTier=${encodeURIComponent(String(b.tier))}&oppCount=4&salespersonNo=${encodeURIComponent(
-          repNo
-        )}`,
+        )}&onePerTier=1&selectedTier=${encodeURIComponent(
+          String(b.tier)
+        )}&oppCount=4&salespersonNo=${encodeURIComponent(repNo)}`,
         { cache: "no-store" }
       );
+
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Failed to load opportunities.");
 
@@ -263,14 +232,20 @@ export default function SalesToolsPage() {
     <div className="p-6 space-y-6">
       <h1 className="text-3xl font-bold">Sales Tools</h1>
 
+      {/* TOP: Next Best Product */}
       <div className="bg-white rounded-lg shadow p-4 border border-black">
         <h2 className="text-lg font-semibold mb-3">Next Best Product</h2>
         <NextBestProductCard />
       </div>
 
+      {/* Item Code Opportunity Finder */}
       <div className="bg-white rounded-lg shadow p-4 border border-black">
         <h2 className="text-lg font-semibold mb-3">Item Code Opportunity Finder</h2>
 
+        {/* Debug line (optional) */}
+        
+
+        {/* Input row */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -287,108 +262,87 @@ export default function SalesToolsPage() {
             />
           </div>
 
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Or search by name
-            </label>
+<div className="flex-1">
+  <label className="block text-sm font-medium text-gray-700 mb-1">
+    Or search by name
+  </label>
+  <div className="relative">
+    <input
+      value={itemSearch}
+      onChange={(e) => setItemSearch(e.target.value)}
+      placeholder='e.g. "VOLT"'
+      className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+    />
 
-            <div className="relative">
-              <input
-                value={itemSearch}
-                onChange={(e) => setItemSearch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && canSearchByName && itemSuggestions.length > 0) {
-                    const first = itemSuggestions[0];
-                    const code = String(first.itemCode || "").toUpperCase().trim();
-                    if (!code) return;
-
-                    setItemCode(code);
-                    setItemSearch("");
-                    setItemSuggestions([]);
-                    setLoadingSuggestions(false);
-
-                    setTimeout(() => onSearch(code), 0);
-                  }
-                }}
-                placeholder='e.g. "pokemon"'
-                className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
-              />
-
+              {/* Show dropdown while typing so you can see "No matches" instead of nothing */}
               {itemSearch.trim().length > 1 ? (
-                <div className="absolute z-20 mt-1 w-full rounded border border-gray-200 bg-white shadow">
-                  {loadingSuggestions ? (
-                    <div className="px-3 py-2 text-sm text-gray-600">
-                      Searching for{" "}
-                      <span className="font-mono font-semibold">{tokenUpper}</span>…
-                    </div>
-                  ) : itemSuggestions.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-gray-600">
-                      No matches for{" "}
-                      <span className="font-mono font-semibold">{tokenUpper}</span>.
-                    </div>
-                  ) : (
-                    <div className="max-h-64 overflow-auto">
-                      {itemSuggestions.map((it) => (
-                        <button
-                          key={it.itemCode}
-                          type="button"
-                          onClick={() => {
-                            const code = String(it.itemCode || "").toUpperCase().trim();
-                            if (!code) return;
-
-                            setItemCode(code);
-                            setItemSearch("");
-                            setItemSuggestions([]);
-                            setLoadingSuggestions(false);
-
-                            // ✅ auto-search on click
-                            setTimeout(() => onSearch(code), 0);
-                          }}
-                          className="w-full text-left px-3 py-2 hover:bg-gray-50"
-                        >
-                          <div className="text-sm font-semibold font-mono">
-                            {it.itemCode}
-                          </div>
-                          {it.itemCodeDesc ? (
-                            <div className="text-xs text-gray-600">{it.itemCodeDesc}</div>
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
+      <div className="absolute z-20 mt-1 w-full rounded border border-gray-200 bg-white shadow">
+        {loadingSuggestions ? (
+          <div className="px-3 py-2 text-sm text-gray-600">Searching…</div>
+        ) : itemSuggestions.length === 0 ? (
+          <div className="px-3 py-2 text-sm text-gray-600">No matches.</div>
+        ) : (
+          <div className="max-h-64 overflow-auto">
+            {itemSuggestions.map((it) => (
+              <button
+                key={it.itemCode}
+                type="button"
+                onClick={() => {
+                  const code = String(it.itemCode || "").toUpperCase().trim();
+                  setItemCode(code);
+                  setItemSearch("");
+                  setItemSuggestions([]);
+                  setLoadingSuggestions(false);
+                  setTimeout(() => onSearch(), 0);
+                }}
+                className="w-full text-left px-3 py-2 hover:bg-gray-50"
+              >
+                <div className="text-sm font-semibold font-mono">{it.itemCode}</div>
+                {it.itemCodeDesc ? (
+                  <div className="text-xs text-gray-600">{it.itemCodeDesc}</div>
+                ) : null}
+              </button>
+            ))}
           </div>
+        )}
+      </div>
+    ) : null}
+  </div>
+</div>
 
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => onSearch()}
+              onClick={onSearch}
               disabled={!canSearch || loadingBuyers}
               className={`px-4 py-2 rounded border text-sm ${
                 !canSearch || loadingBuyers
-                  ? "bg-gray-100 text-gray-400 border-gray-200"
+                  ? "bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed"
                   : "bg-gray-900 text-white border-gray-900 hover:bg-black"
               }`}
             >
-              Search
+              {loadingBuyers ? "Searching..." : "Search"}
             </button>
 
             <button
               type="button"
               onClick={onClear}
-              className="px-4 py-2 rounded border text-sm bg-white border-gray-300 hover:bg-gray-50"
+              className="px-4 py-2 rounded border text-sm bg-white text-gray-900 border-gray-300 hover:bg-gray-50"
             >
               Clear
             </button>
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Two-column results area */}
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* LEFT */}
           <div className="border border-gray-200 rounded p-3">
             <div className="text-sm font-semibold mb-2">
-              Stores that bought {submittedItemCode ? submittedItemCode : "—"}
+              Stores that bought{" "}
+              <span className="font-mono">
+                {submittedItemCode ? submittedItemCode : "—"}
+              </span>
             </div>
 
             {buyersError ? (
@@ -435,6 +389,7 @@ export default function SalesToolsPage() {
             )}
           </div>
 
+          {/* RIGHT */}
           <div className="border border-gray-200 rounded p-3">
             <div className="text-sm font-semibold mb-2">
               Similar stores (same tier
@@ -449,8 +404,8 @@ export default function SalesToolsPage() {
               </div>
             ) : !selectedBuyer ? (
               <div className="text-sm text-gray-600">
-                Click a buyer on the left to find 4 similar stores in the same tier
-                that haven’t bought it.
+                Click a buyer on the left to find 4 similar stores in the same tier that
+                haven’t bought it.
               </div>
             ) : loadingOpps ? (
               <div className="text-sm text-gray-600">Loading…</div>
@@ -461,7 +416,10 @@ export default function SalesToolsPage() {
             ) : (
               <div className="space-y-2">
                 {opportunities.map((o) => (
-                  <div key={o.customerNo} className="rounded border border-gray-200 px-3 py-2">
+                  <div
+                    key={o.customerNo}
+                    className="rounded border border-gray-200 px-3 py-2"
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="text-sm font-semibold">
                         {o.name?.trim() ? o.name : `Customer ${o.customerNo}`}
@@ -470,9 +428,7 @@ export default function SalesToolsPage() {
                       {o.buyerEmail ? (
                         <a
                           href={`mailto:${o.buyerEmail}?subject=${encodeURIComponent(
-                            `${submittedItemCode ?? ""} ${itemDesc ?? ""} Opportunity Buy!`
-                              .replace(/\s+/g, " ")
-                              .trim()
+                            `${submittedItemCode ?? ""} ${itemDesc ?? ""} Opportunity Buy!`.replace(/\s+/g, " ").trim()
                           )}`}
                           className="shrink-0 rounded-full border border-gray-300 bg-white px-2 py-0.5 text-[11px] font-medium text-gray-900 hover:bg-gray-50"
                           title={o.buyerEmail}
@@ -481,7 +437,6 @@ export default function SalesToolsPage() {
                         </a>
                       ) : null}
                     </div>
-
                     <div className="text-xs text-gray-600">
                       {o.city ? `${o.city}, ` : ""}
                       {o.state || ""}
@@ -502,6 +457,7 @@ export default function SalesToolsPage() {
         </div>
       </div>
 
+      {/* (later) more AI tools below */}
       <div className="bg-white rounded-lg shadow p-4 border border-black">
         <h2 className="text-lg font-semibold mb-3">Coming soon</h2>
         <div className="text-sm text-gray-600">

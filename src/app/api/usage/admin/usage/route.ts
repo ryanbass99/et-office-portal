@@ -35,17 +35,56 @@ function endOfDayISO(iso: string) {
   return new Date(iso + "T23:59:59.999");
 }
 
+function tsToDateMaybe(v: any): Date | null {
+  if (!v) return null;
+  try {
+    if (typeof v.toDate === "function") return v.toDate();
+    if (v instanceof Date) return v;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function computeSessionMs(d: any): number {
+  // Prefer activeMs if present
+  const activeMs =
+    Number(
+      d.activeMs ??
+        d.activeMS ??
+        d.activeMillis ??
+        d.activeMilliseconds ??
+        0
+    ) || 0;
+
+  if (activeMs > 0) return activeMs;
+
+  // Fall back to endedAt - startedAt (wall clock)
+  const started = tsToDateMaybe(d.startedAt);
+  const ended = tsToDateMaybe(d.endedAt ?? d.lastActiveAt);
+
+  if (started && ended) {
+    const diff = ended.getTime() - started.getTime();
+    if (diff > 0) return diff;
+  }
+
+  return 0;
+}
+
 export async function GET(req: Request) {
   try {
     ensureAdmin();
 
     const url = new URL(req.url);
     const start = url.searchParams.get("start"); // YYYY-MM-DD
-    const end = url.searchParams.get("end");     // YYYY-MM-DD
+    const end = url.searchParams.get("end"); // YYYY-MM-DD
     const daysParam = url.searchParams.get("days");
 
-    // Auth: Bearer token
-    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+    const authHeader =
+      req.headers.get("authorization") ||
+      req.headers.get("Authorization") ||
+      "";
     const m = authHeader.match(/^Bearer\s+(.+)$/i);
     if (!m) return json(401, { error: "Missing Authorization Bearer token" });
 
@@ -55,12 +94,10 @@ export async function GET(req: Request) {
 
     const db = getFirestore();
 
-    // Admin check
     const userSnap = await db.collection("users").doc(uid).get();
     const role = userSnap.exists ? (userSnap.data() as any)?.role : null;
     if (role !== "admin") return json(403, { error: "Forbidden" });
 
-    // Determine date range
     let startDate: Date;
     let endDate: Date;
 
@@ -68,7 +105,6 @@ export async function GET(req: Request) {
       startDate = startOfDayISO(start);
       endDate = endOfDayISO(end);
     } else {
-      // Backwards compatible: last N days ending today
       const days = Math.max(1, Math.min(365, Number(daysParam) || 30));
       const now = new Date();
       endDate = now;
@@ -78,16 +114,10 @@ export async function GET(req: Request) {
     const startTs = Timestamp.fromDate(startDate);
     const endTs = Timestamp.fromDate(endDate);
 
-    // ---- Data model assumptions (matches your portal work so far) ----
-    // usageSessions: documents with { startedAt, endedAt, durationSec, uid, path, salesmanId?, name? }
-    // usageEvents: documents with { createdAt, uid, type: "export", path, salesmanId?, name? }
-    //
-    // If your field names differ, adjust them here (NOT on the client).
-
     const sessionsSnap = await db
       .collection("usageSessions")
-      .where("startedAt", ">=", startTs)
-      .where("startedAt", "<=", endTs)
+      .where("endedAt", ">=", startTs)
+      .where("endedAt", "<=", endTs)
       .get();
 
     const exportsSnap = await db
@@ -97,9 +127,8 @@ export async function GET(req: Request) {
       .where("type", "==", "export")
       .get();
 
-    // Aggregate
-    const repAgg = new Map<string, any>(); // uid -> { uid, name, salesmanId, sessions, hours, exports, pages: Map }
-    const pageAgg = new Map<string, any>(); // path -> { path, sessions, hours, exports }
+    const repAgg = new Map<string, any>();
+    const pageAgg = new Map<string, any>();
 
     function ensureRep(uidKey: string, base: any) {
       if (!repAgg.has(uidKey)) {
@@ -108,45 +137,46 @@ export async function GET(req: Request) {
           name: base?.name || "",
           salesmanId: base?.salesmanId || base?.salesperson || "",
           sessions: 0,
-          hours: 0,
+          ms: 0,
           exports: 0,
           pages: new Map<string, any>(),
         });
       } else {
         const r = repAgg.get(uidKey);
         if (!r.name && base?.name) r.name = base.name;
-        if (!r.salesmanId && (base?.salesmanId || base?.salesperson)) r.salesmanId = base.salesmanId || base.salesperson;
+        if (!r.salesmanId && (base?.salesmanId || base?.salesperson)) {
+          r.salesmanId = base.salesmanId || base.salesperson;
+        }
       }
       return repAgg.get(uidKey);
     }
 
     function ensurePage(map: Map<string, any>, path: string) {
-      if (!map.has(path)) map.set(path, { path, sessions: 0, hours: 0, exports: 0 });
+      if (!map.has(path)) map.set(path, { path, sessions: 0, ms: 0, exports: 0 });
       return map.get(path);
     }
 
-    // Sessions -> sessions + hours
+    // Sessions
     for (const doc of sessionsSnap.docs) {
       const d: any = doc.data();
       const uidKey = String(d.uid || "");
       const path = String(d.path || "");
       if (!uidKey) continue;
 
-      const durationSec = Number(d.durationSec ?? d.durationSeconds ?? 0) || 0;
-      const hours = durationSec / 3600;
+      const ms = computeSessionMs(d);
 
       const rep = ensureRep(uidKey, d);
       rep.sessions += 1;
-      rep.hours += hours;
+      rep.ms += ms;
 
       if (path) {
         const p = ensurePage(rep.pages, path);
         p.sessions += 1;
-        p.hours += hours;
+        p.ms += ms;
 
         const pg = ensurePage(pageAgg, path);
         pg.sessions += 1;
-        pg.hours += hours;
+        pg.ms += ms;
       }
     }
 
@@ -161,19 +191,21 @@ export async function GET(req: Request) {
       rep.exports += 1;
 
       if (path) {
-        const p = ensurePage(rep.pages, path);
-        p.exports += 1;
-
-        const pg = ensurePage(pageAgg, path);
-        pg.exports += 1;
+        ensurePage(rep.pages, path).exports += 1;
+        ensurePage(pageAgg, path).exports += 1;
       }
     }
 
+    const totalMs = Array.from(repAgg.values()).reduce(
+      (sum: number, r: any) => sum + (r.ms || 0),
+      0
+    );
+
     const totals = {
       sessions: sessionsSnap.size,
-      activeHours: Number(
-        Array.from(repAgg.values()).reduce((sum: number, r: any) => sum + (r.hours || 0), 0).toFixed(2)
-      ),
+      activeMsTotal: totalMs,
+      activeMinutes: Number((totalMs / 1000 / 60).toFixed(2)),
+      activeHours: Number((totalMs / 1000 / 60 / 60).toFixed(4)), // more precision
     };
 
     const hoursPerRep = Array.from(repAgg.values())
@@ -181,7 +213,8 @@ export async function GET(req: Request) {
         uid: r.uid,
         name: r.name || "-",
         salesmanId: r.salesmanId || "-",
-        hours: Number((r.hours || 0).toFixed(2)),
+        minutes: Number(((r.ms || 0) / 1000 / 60).toFixed(2)),
+        hours: Number(((r.ms || 0) / 1000 / 60 / 60).toFixed(4)),
         sessions: r.sessions || 0,
       }))
       .sort((a, b) => b.hours - a.hours);
@@ -198,7 +231,8 @@ export async function GET(req: Request) {
     const pageUsage = Array.from(pageAgg.values())
       .map((p: any) => ({
         path: p.path,
-        hours: Number((p.hours || 0).toFixed(2)),
+        minutes: Number(((p.ms || 0) / 1000 / 60).toFixed(2)),
+        hours: Number(((p.ms || 0) / 1000 / 60 / 60).toFixed(4)),
         sessions: p.sessions || 0,
         exports: p.exports || 0,
       }))
@@ -211,7 +245,8 @@ export async function GET(req: Request) {
       pages: Array.from(r.pages.values())
         .map((p: any) => ({
           path: p.path,
-          hours: Number((p.hours || 0).toFixed(2)),
+          minutes: Number(((p.ms || 0) / 1000 / 60).toFixed(2)),
+          hours: Number(((p.ms || 0) / 1000 / 60 / 60).toFixed(4)),
           sessions: p.sessions || 0,
           exports: p.exports || 0,
         }))

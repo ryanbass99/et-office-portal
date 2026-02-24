@@ -18,7 +18,7 @@ import {
   query,
   startAfter,
   where,
-  type DocumentSnapshot
+  type DocumentSnapshot,
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -49,6 +49,8 @@ type Customer = {
 
   buyerEmail?: string;
 
+  buyer2Email?: string;
+
   creditHoldBool?: boolean;
   lastActivityBucket?: string;
   status?: "A" | "I" | string;
@@ -66,12 +68,10 @@ type Salesperson = {
   role?: string;
 };
 
-
-
-
 type Note = {
   id: string;
   text: string;
+  pinned?: boolean;
   followUpDate?: any;
   createdAt?: any;
   updatedAt?: any;
@@ -159,10 +159,7 @@ const FETCH_CHUNK = 500;
 
 function toMoney(v: any) {
   if (v === null || v === undefined || v === "") return "";
-  const n =
-    typeof v === "number"
-      ? v
-      : Number(String(v).replace(/[^0-9.-]/g, ""));
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[^0-9.-]/g, ""));
   if (!Number.isFinite(n)) return String(v);
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -265,13 +262,12 @@ export default function CustomersPage() {
   const [search, setSearch] = useState("");
   const [salespersonNo, setSalespersonNo] = useState<string>("");
 
-  // ✅ role + admin-only rep switcher
+  // role + admin-only rep switcher
   const [role, setRole] = useState<string>("");
   const isAdmin = role === "admin";
 
   const [salespeople, setSalespeople] = useState<Salesperson[]>([]);
   const [selectedSalespersonNo, setSelectedSalespersonNo] = useState<string>("");
-
 
   const [error, setError] = useState<string>("");
   const [totalForRep, setTotalForRep] = useState<number | null>(null);
@@ -285,10 +281,10 @@ export default function CustomersPage() {
   const [top50Only, setTop50Only] = useState(false);
   const [stateFilter, setStateFilter] = useState<string>("");
 
-  // ✅ dashboard quick views
+  // dashboard quick views
   const [quickView, setQuickView] = useState<"" | "atRisk45" | "inactive60">("");
 
-  // ✅ new preset mode: whitespace list (NOT bought item)
+  // preset mode: whitespace list (NOT bought item)
   const [invertItemFilter, setInvertItemFilter] = useState(false);
 
   // item filter
@@ -329,50 +325,47 @@ export default function CustomersPage() {
   const [callPrepError, setCallPrepError] = useState<string | null>(null);
   const [callPrepData, setCallPrepData] = useState<CallPrepResponse | null>(null);
 
+  // ---- Notes drawer ----
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notesFor, setNotesFor] = useState<Customer | null>(null);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [notesRows, setNotesRows] = useState<Note[]>([]);
+  const [newNoteText, setNewNoteText] = useState<string>("");
+  const [newNoteFollowUp, setNewNoteFollowUp] = useState<string>("");
+  const [notesSaving, setNotesSaving] = useState<boolean>(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState<string>("");
+  const [editingNoteFollowUp, setEditingNoteFollowUp] = useState<string>("");
+  const [notesCountByCustomerNo, setNotesCountByCustomerNo] = useState<Record<string, number>>(
+    {}
+  );
 
-// ---- Notes drawer ----
-const [notesOpen, setNotesOpen] = useState(false);
-const [notesFor, setNotesFor] = useState<Customer | null>(null);
-const [notesLoading, setNotesLoading] = useState(false);
-const [notesError, setNotesError] = useState<string | null>(null);
-const [notesRows, setNotesRows] = useState<Note[]>([]);
-const [newNoteText, setNewNoteText] = useState<string>("");
-const [newNoteFollowUp, setNewNoteFollowUp] = useState<string>("");
-const [notesSaving, setNotesSaving] = useState<boolean>(false);
-const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-const [editingNoteText, setEditingNoteText] = useState<string>("");
-const [editingNoteFollowUp, setEditingNoteFollowUp] = useState<string>("");
-const [notesCountByCustomerNo, setNotesCountByCustomerNo] = useState<Record<string, number>>({});
+  async function refreshNotesCount(customerNo: string) {
+    const key = String(customerNo || "").trim();
+    if (!key) return;
 
-async function refreshNotesCount(customerNo: string) {
-  const key = String(customerNo || "").trim();
-  if (!key) return;
+    try {
+      const colRef = collection(db, "customers", key, "notes");
+      const snap = await getCountFromServer(colRef);
+      const count = snap.data().count || 0;
 
-  try {
-    const colRef = collection(db, "customers", key, "notes");
-    const snap = await getCountFromServer(colRef);
-    const count = snap.data().count || 0;
-
-    setNotesCountByCustomerNo((prev) => {
-      // Keep other customers’ counts intact
-      if (prev[key] === count) return prev;
-      return { ...prev, [key]: count };
-    });
-  } catch (e) {
-    console.error("refreshNotesCount failed", key, e);
+      setNotesCountByCustomerNo((prev) => {
+        if (prev[key] === count) return prev;
+        return { ...prev, [key]: count };
+      });
+    } catch (e) {
+      console.error("refreshNotesCount failed", key, e);
+    }
   }
-}
 
-function closeNotes() {
-  const key = String(notesFor?.customerNo || "").trim();
-  setNotesOpen(false);
-  setNotesFor(null);
+  function closeNotes() {
+    const key = String(notesFor?.customerNo || "").trim();
+    setNotesOpen(false);
+    setNotesFor(null);
 
-  // Re-check count so the green pill updates immediately after closing
-  if (key) refreshNotesCount(key);
-}
-
-
+    if (key) refreshNotesCount(key);
+  }
 
   async function openCallPrep(c: Customer) {
     setCallPrepOpen(true);
@@ -382,12 +375,9 @@ function closeNotes() {
     setCallPrepData(null);
 
     try {
-      const res = await fetch(
-        `/api/call-prep?customerNo=${encodeURIComponent(c.customerNo)}`
-      );
+      const res = await fetch(`/api/call-prep?customerNo=${encodeURIComponent(c.customerNo)}`);
       const json = await res.json();
-      if (!res.ok)
-        throw new Error(json?.error || `Failed to load call prep (${res.status})`);
+      if (!res.ok) throw new Error(json?.error || `Failed to load call prep (${res.status})`);
       setCallPrepData(json as CallPrepResponse);
     } catch (e: any) {
       setCallPrepError(e?.message ?? "Failed to load call prep");
@@ -396,163 +386,191 @@ function closeNotes() {
     }
   }
 
-
-function openNotes(c: Customer) {
-  setNotesOpen(true);
-  setNotesFor(c);
-  setNotesError(null);
-  setNotesRows([]);
-  setNewNoteText("");
-  setNewNoteFollowUp("");
-  setEditingNoteId(null);
-  setEditingNoteText("");
-  setEditingNoteFollowUp("");
-}
-
+  function openNotes(c: Customer) {
+    setNotesOpen(true);
+    setNotesFor(c);
+    setNotesError(null);
+    setNotesRows([]);
+    setNewNoteText("");
+    setNewNoteFollowUp("");
+    setEditingNoteId(null);
+    setEditingNoteText("");
+    setEditingNoteFollowUp("");
+  }
 
   const searchTimer = useRef<any>(null);
 
-
-// Notes realtime subscription (customers/{customerNo}/notes)
-useEffect(() => {
-  if (!notesOpen || !notesFor?.customerNo) {
-    setNotesRows([]);
-    setNotesLoading(false);
-    return;
-  }
-
-  setNotesLoading(true);
-  setNotesError(null);
-
-  const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
-  const q = query(notesRef, orderBy("createdAt", "desc"));
-
-  const unsub = onSnapshot(
-    q,
-    (snap) => {
-      const rows: Note[] = snap.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as any),
-      }));
-      setNotesRows(rows);
+  // Notes realtime subscription (customers/{customerNo}/notes)
+  useEffect(() => {
+    if (!notesOpen || !notesFor?.customerNo) {
+      setNotesRows([]);
       setNotesLoading(false);
-    },
-    (err) => {
-      console.error("Notes snapshot error:", err);
-      setNotesError(err?.message ?? "Failed to load notes");
-      setNotesLoading(false);
+      return;
     }
-  );
 
-  return () => unsub();
-}, [notesOpen, notesFor?.customerNo]);
+    setNotesLoading(true);
+    setNotesError(null);
 
-async function addNote() {
-  const text = newNoteText.trim();
-  if (!text || !notesFor?.customerNo) return;
-
-  const user = auth.currentUser;
-  if (!user) {
-    alert("Not signed in.");
-    return;
-  }
-
-  setNotesSaving(true);
-  try {
     const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
-    await addDoc(notesRef, {
-      text,
-      ...(newNoteFollowUp.trim()
-        ? { followUpDate: new Date(`${newNoteFollowUp}T00:00:00`) }
-        : {}),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      createdByUid: user.uid,
-      createdByName: user.displayName || user.email || "",
-      updatedByUid: user.uid,
-    });
-    // ✅ make Notes pill go green immediately
-    setNotesCountByCustomerNo((prev) => {
-      const key = String(notesFor.customerNo || "").trim();
-      if (!key) return prev;
-      const nextCount = Math.max(1, (prev[key] || 0) + 1);
-      return { ...prev, [key]: nextCount };
-    });
-    refreshNotesCount(notesFor.customerNo);
+    const q = query(
+      notesRef,
+      orderBy("pinned", "desc"),
+      orderBy("updatedAt", "desc"),
+      orderBy("createdAt", "desc")
+    );
 
-    setNewNoteText("");
-    setNewNoteFollowUp("");
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to save note");
-  } finally {
-    setNotesSaving(false);
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows: Note[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }));
+        setNotesRows(rows);
+        setNotesLoading(false);
+      },
+      (err) => {
+        console.error("Notes snapshot error:", err);
+        setNotesError(err?.message ?? "Failed to load notes");
+        setNotesLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, [notesOpen, notesFor?.customerNo]);
+
+  async function addNote() {
+    const text = newNoteText.trim();
+    if (!text || !notesFor?.customerNo) return;
+
+    const user = auth.currentUser;
+    if (!user) {
+      alert("Not signed in.");
+      return;
+    }
+
+    setNotesSaving(true);
+    try {
+      const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
+      await addDoc(notesRef, {
+        text,
+        pinned: false,
+        ...(newNoteFollowUp.trim()
+          ? { followUpDate: new Date(`${newNoteFollowUp}T00:00:00`) }
+          : {}),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdByUid: user.uid,
+        createdByName: user.displayName || user.email || "",
+        updatedByUid: user.uid,
+      });
+
+      // Make Notes pill go green immediately
+      setNotesCountByCustomerNo((prev) => {
+        const key = String(notesFor.customerNo || "").trim();
+        if (!key) return prev;
+        const nextCount = Math.max(1, (prev[key] || 0) + 1);
+        return { ...prev, [key]: nextCount };
+      });
+      refreshNotesCount(notesFor.customerNo);
+
+      setNewNoteText("");
+      setNewNoteFollowUp("");
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message ?? "Failed to save note");
+    } finally {
+      setNotesSaving(false);
+    }
   }
-}
 
-function startEditNote(n: Note) {
-  setEditingNoteId(n.id);
-  setEditingNoteText(n.text || "");
-  const raw = (n as any).followUpDate;
-  const d: Date | null = raw?.toDate ? raw.toDate() : raw instanceof Date ? raw : null;
-  setEditingNoteFollowUp(d ? d.toISOString().slice(0, 10) : "");
-}
-
-function cancelEditNote() {
-  setEditingNoteId(null);
-  setEditingNoteText("");
-  setEditingNoteFollowUp("");
-}
-
-async function saveEditNote() {
-  if (!notesFor?.customerNo || !editingNoteId) return;
-  const text = editingNoteText.trim();
-  if (!text) return;
-
-  const user = auth.currentUser;
-  if (!user) {
-    alert("Not signed in.");
-    return;
+  function startEditNote(n: Note) {
+    setEditingNoteId(n.id);
+    setEditingNoteText(n.text || "");
+    const raw = (n as any).followUpDate;
+    const d: Date | null = raw?.toDate ? raw.toDate() : raw instanceof Date ? raw : null;
+    setEditingNoteFollowUp(d ? d.toISOString().slice(0, 10) : "");
   }
 
-  setNotesSaving(true);
-  try {
-    const ref = doc(db, "customers", notesFor.customerNo, "notes", editingNoteId);
-    await updateDoc(ref, {
-      text,
-      followUpDate: editingNoteFollowUp.trim()
-        ? new Date(`${editingNoteFollowUp}T00:00:00`)
-        : null,
-      updatedAt: serverTimestamp(),
-      updatedByUid: user.uid,
-    });
-    cancelEditNote();
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to update note");
-  } finally {
-    setNotesSaving(false);
+  function cancelEditNote() {
+    setEditingNoteId(null);
+    setEditingNoteText("");
+    setEditingNoteFollowUp("");
   }
-}
 
-async function deleteNote(noteId: string) {
-  if (!notesFor?.customerNo) return;
-  if (!confirm("Delete this note?")) return;
+  async function saveEditNote() {
+    if (!notesFor?.customerNo || !editingNoteId) return;
+    const text = editingNoteText.trim();
+    if (!text) return;
 
-  setNotesSaving(true);
-  try {
-    const ref = doc(db, "customers", notesFor.customerNo, "notes", noteId);
-    await deleteDoc(ref);
-    refreshNotesCount(notesFor.customerNo);
-    if (editingNoteId === noteId) cancelEditNote();
-  } catch (e: any) {
-    console.error(e);
-    alert(e?.message ?? "Failed to delete note");
-  } finally {
-    setNotesSaving(false);
+    const user = auth.currentUser;
+    if (!user) {
+      alert("Not signed in.");
+      return;
+    }
+
+    setNotesSaving(true);
+    try {
+      const ref = doc(db, "customers", notesFor.customerNo, "notes", editingNoteId);
+      await updateDoc(ref, {
+        text,
+        followUpDate: editingNoteFollowUp.trim()
+          ? new Date(`${editingNoteFollowUp}T00:00:00`)
+          : null,
+        updatedAt: serverTimestamp(),
+        updatedByUid: user.uid,
+      });
+      cancelEditNote();
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message ?? "Failed to update note");
+    } finally {
+      setNotesSaving(false);
+    }
   }
-}
 
+  async function togglePinNote(n: Note) {
+    if (!notesFor?.customerNo) return;
+
+    const user = auth.currentUser;
+    if (!user) {
+      alert("Not signed in.");
+      return;
+    }
+
+    setNotesSaving(true);
+    try {
+      const ref = doc(db, "customers", notesFor.customerNo, "notes", n.id);
+      await updateDoc(ref, {
+        pinned: !Boolean((n as any).pinned),
+        updatedAt: serverTimestamp(),
+        updatedByUid: user.uid,
+      });
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message ?? "Failed to pin/unpin note");
+    } finally {
+      setNotesSaving(false);
+    }
+  }
+
+  async function deleteNote(noteId: string) {
+    if (!notesFor?.customerNo) return;
+    if (!confirm("Delete this note?")) return;
+
+    setNotesSaving(true);
+    try {
+      const ref = doc(db, "customers", notesFor.customerNo, "notes", noteId);
+      await deleteDoc(ref);
+      refreshNotesCount(notesFor.customerNo);
+      if (editingNoteId === noteId) cancelEditNote();
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message ?? "Failed to delete note");
+    } finally {
+      setNotesSaving(false);
+    }
+  }
 
   function mapSnap(snap: any): Customer[] {
     return snap.docs.map((d: any) => {
@@ -593,7 +611,8 @@ async function deleteNote(noteId: string) {
         currentBalance: v.currentBalance ?? "",
         udf250TotalSales: v.udf250TotalSales ?? v.udf250Totalsales ?? "",
         buyerEmail: v.buyerEmail ?? "",
-        email: v.email ?? "",
+        buyer2Email: v.buyer2Email ?? "",
+email: v.email ?? "",
       };
     });
   }
@@ -614,10 +633,10 @@ async function deleteNote(noteId: string) {
     }
 
     let all: Customer[] = [];
-    let last: any = null;
+    let last: DocumentSnapshot | null = null;
 
     while (true) {
-      const q: any = last
+      const qAny: any = last
         ? query(
             collection(db, "customers"),
             or(where("salespersonNo", "==", sp), where("salespersonNo2", "==", sp)),
@@ -632,11 +651,11 @@ async function deleteNote(noteId: string) {
             limit(FETCH_CHUNK)
           );
 
-      const snap = await getDocs(q);
+      const snap = await getDocs(qAny);
       all = all.concat(mapSnap(snap));
 
       if (snap.docs.length < FETCH_CHUNK) break;
-      last = snap.docs[snap.docs.length - 1];
+      last = snap.docs[snap.docs.length - 1] as any;
     }
 
     setAllRows(all);
@@ -652,9 +671,7 @@ async function deleteNote(noteId: string) {
     }
 
     const rep = normalizeSalespersonNo(sp);
-    if (!rep) {
-      return;
-    }
+    if (!rep) return;
 
     setItemError("");
     setItemLoading(true);
@@ -677,9 +694,7 @@ async function deleteNote(noteId: string) {
       console.error(e);
       setItemCustomerSet(null);
       setItemError(
-        e?.code
-          ? `${e.code}: ${e.message ?? ""}`
-          : String(e?.message ?? e ?? "Unknown error")
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Unknown error")
       );
     } finally {
       setItemLoading(false);
@@ -760,9 +775,7 @@ async function deleteNote(noteId: string) {
       } catch (e: any) {
         console.error(e);
         setError(
-          e?.code
-            ? `${e.code}: ${e.message ?? ""}`
-            : String(e?.message ?? e ?? "Unknown error")
+          e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Unknown error")
         );
         setAllRows([]);
       } finally {
@@ -774,7 +787,7 @@ async function deleteNote(noteId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Admin-only: load salespeople for rep pills
+  // Admin-only: load salespeople for rep pills
   useEffect(() => {
     if (!isAdmin) {
       setSalespeople([]);
@@ -784,18 +797,15 @@ async function deleteNote(noteId: string) {
 
     (async () => {
       try {
-        // NOTE: roles can vary. For admin-only rep switcher, we just pull any user that has a salesperson code.
         const snap = await getDocs(collection(db, "users"));
 
         const rows: Salesperson[] = snap.docs
           .map((d) => {
             const v = d.data() as any;
 
-            // Your Firestore field is `salesperson` (e.g. "0001")
             const sp = normalizeSalespersonNo(String(v.salesperson ?? ""));
             if (!sp) return null;
 
-            // Skip admins from the list (optional)
             const r = String(v.role ?? "").toLowerCase();
             if (r === "admin") return null;
 
@@ -814,8 +824,7 @@ async function deleteNote(noteId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-
-  // ✅ Admin-only: switch rep when a pill is clicked
+  // Admin-only: switch rep when a pill is clicked
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -835,9 +844,7 @@ async function deleteNote(noteId: string) {
       } catch (e: any) {
         console.error(e);
         setError(
-          e?.code
-            ? `${e.code}: ${e.message ?? ""}`
-            : String(e?.message ?? e ?? "Unknown error")
+          e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Unknown error")
         );
         setAllRows([]);
       } finally {
@@ -847,8 +854,7 @@ async function deleteNote(noteId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSalespersonNo, isAdmin]);
 
-
-  // ✅ quick preset from Sales Tools: /customers?quick=whitespace&top50=1&item=K411
+  // quick preset from Sales Tools: /customers?quick=whitespace&top50=1&item=K411
   useEffect(() => {
     const quick = (searchParams.get("quick") || "").trim();
     const view = (searchParams.get("view") || "").trim();
@@ -874,7 +880,7 @@ async function deleteNote(noteId: string) {
       return;
     }
 
-    // ✅ dashboard views
+    // dashboard views
     if (view === "atRisk45" || view === "inactive60") {
       setQuickView(view);
 
@@ -895,29 +901,24 @@ async function deleteNote(noteId: string) {
     }
 
     setQuickView("");
-
     setInvertItemFilter(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ✅ Deep-link: /customers?customerNo=XXXX&open=notes
-  // Opens Notes drawer directly (used by Dashboard follow-ups)
+  // Deep-link: /customers?customerNo=XXXX&open=notes
   useEffect(() => {
     const open = (searchParams.get("open") || "").trim();
     const customerNo = (searchParams.get("customerNo") || "").trim();
 
     if (open !== "notes" || !customerNo) return;
 
-    // If we already have the customer loaded, use it.
-    const found =
-      allRows.find((r) => String(r.customerNo || "").trim() === customerNo) || null;
+    const found = allRows.find((r) => String(r.customerNo || "").trim() === customerNo) || null;
 
     async function run() {
       try {
         if (found) {
           openNotes(found);
         } else {
-          // Fallback: fetch customer doc to get a name, then open Notes
           const snap = await getDoc(doc(db, "customers", customerNo));
           const data = snap.exists() ? (snap.data() as any) : {};
           openNotes({
@@ -927,7 +928,6 @@ async function deleteNote(noteId: string) {
           } as Customer);
         }
       } finally {
-        // Clean URL so refresh doesn't re-open drawer
         const next = new URLSearchParams(searchParams.toString());
         next.delete("open");
         next.delete("customerNo");
@@ -936,11 +936,9 @@ async function deleteNote(noteId: string) {
       }
     }
 
-    // Avoid double-open if already open for same customer
     if (!notesOpen || notesFor?.customerNo !== customerNo) run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, allRows]);
-
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -950,7 +948,7 @@ async function deleteNote(noteId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  // ✅ Only fetch buyers list once BOTH item + rep are known
+  // Only fetch buyers list once BOTH item + rep are known
   useEffect(() => {
     if (!activeItemCode) {
       setItemCustomerSet(null);
@@ -1088,15 +1086,12 @@ async function deleteNote(noteId: string) {
     return rows;
   }, [filteredAll, sortKey, sortDir]);
 
-  const topRows = useMemo(
-    () => (top50Only ? sortedAll.slice(0, 50) : sortedAll),
-    [top50Only, sortedAll]
-  );
+  const topRows = useMemo(() => (top50Only ? sortedAll.slice(0, 50) : sortedAll), [
+    top50Only,
+    sortedAll,
+  ]);
 
-  const visibleRows = useMemo(
-    () => topRows.slice(0, visibleCount),
-    [topRows, visibleCount]
-  );
+  const visibleRows = useMemo(() => topRows.slice(0, visibleCount), [topRows, visibleCount]);
 
   // Notes pill: show green if customer has at least 1 note
   useEffect(() => {
@@ -1163,9 +1158,7 @@ async function deleteNote(noteId: string) {
     setVisibleCount(PAGE_SIZE);
   }
 
-  function toggleSort(
-    key: "customer" | "address" | "city" | "phone" | "balance" | "sales"
-  ) {
+  function toggleSort(key: "customer" | "address" | "city" | "phone" | "balance" | "sales") {
     setVisibleCount(PAGE_SIZE);
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1362,22 +1355,17 @@ async function deleteNote(noteId: string) {
                   ? "Show accounts that have NOT ordered item code:"
                   : "Show accounts that ordered item code:"}
                 {activeItemCode ? (
-                  <span className="ml-2 font-semibold text-gray-900">
-                    {activeItemCode}
-                  </span>
+                  <span className="ml-2 font-semibold text-gray-900">{activeItemCode}</span>
                 ) : (
                   <span className="ml-2 text-gray-400">(none)</span>
                 )}
-                {itemLoading ? (
-                  <span className="ml-2 text-gray-500">Loading…</span>
-                ) : null}
+                {itemLoading ? <span className="ml-2 text-gray-500">Loading…</span> : null}
               </div>
 
               <div className="flex flex-wrap gap-2">
                 {ITEM_BUTTONS.map((b) => {
                   const code = normalizeItemCode(b.code);
-                  const active =
-                    !!code && activeItemCode === code && !invertItemFilter;
+                  const active = !!code && activeItemCode === code && !invertItemFilter;
                   return (
                     <button
                       key={b.label}
@@ -1609,27 +1597,40 @@ async function deleteNote(noteId: string) {
                     <tr key={c.id} className="border-b last:border-0">
                       <td className="p-1">
                         <div className="min-w-0">
-                          <div className="font-medium leading-4 truncate">
-                            {c.customerName}
-                          </div>
+                          <div className="font-medium leading-4 truncate">{c.customerName}</div>
                           <div className="text-gray-500 leading-4 flex flex-wrap items-center gap-2">
                             <span className="tabular-nums">{c.customerNo}</span>
 
                             <span className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700">
-                              {String(c.status ?? "").toUpperCase() === "I"
-                                ? "Inactive"
-                                : "Active"}
+                              {String(c.status ?? "").toUpperCase() === "I" ? "Inactive" : "Active"}
                             </span>
 
-                            {!!String(c.buyerEmail ?? "").trim() ? (
-                              <a
-                                href={`mailto:${String(c.buyerEmail ?? "").trim()}`}
-                                className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
-                                title={String(c.buyerEmail ?? "").trim()}
-                              >
-                                Email Buyer
-                              </a>
-                            ) : null}
+	                            {(() => {
+	                              const raw = [
+	                                (c as any).buyerEmail,
+	                                (c as any).buyer2Email,
+	                              ]
+	                                .map((v) => String(v ?? "").trim())
+	                                .filter(Boolean);
+	                              if (!raw.length) return null;
+	                              const seen = new Set<string>();
+	                              const emails = raw.filter((e) => {
+	                                const k = e.toLowerCase();
+	                                if (seen.has(k)) return false;
+	                                seen.add(k);
+	                                return true;
+	                              });
+	                              const to = emails.join(",");
+	                              return (
+	                                <a
+	                                  href={`mailto:${to}`}
+	                                  className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
+	                                  title={to}
+	                                >
+	                                  Email Buyer
+	                                </a>
+	                              );
+	                            })()}
 
                             <button
                               type="button"
@@ -1653,7 +1654,12 @@ async function deleteNote(noteId: string) {
                             <button
                               type="button"
                               onClick={() => openNotes(c)}
-                              className={`px-1.5 py-0.5 rounded border text-[10px] ${((notesCountByCustomerNo[String(c.customerNo ?? "").trim()] || 0) > 0) ? "bg-green-100 border-green-400 text-green-900" : "bg-white text-gray-700 hover:bg-gray-50"}`}
+                              className={`px-1.5 py-0.5 rounded border text-[10px] ${
+                                (notesCountByCustomerNo[String(c.customerNo ?? "").trim()] || 0) >
+                                0
+                                  ? "bg-green-100 border-green-400 text-green-900"
+                                  : "bg-white text-gray-700 hover:bg-gray-50"
+                              }`}
                               title="Notes"
                             >
                               Notes
@@ -1666,9 +1672,7 @@ async function deleteNote(noteId: string) {
                             ) : null}
 
                             {c.dateLastActivity ? (
-                              <span className="text-[10px] text-gray-500">
-                                Last: {c.dateLastActivity}
-                              </span>
+                              <span className="text-[10px] text-gray-500">Last: {c.dateLastActivity}</span>
                             ) : null}
                           </div>
                         </div>
@@ -1680,12 +1684,8 @@ async function deleteNote(noteId: string) {
                           : ""}
                       </td>
                       <td className="p-1 truncate tabular-nums">{c.phone ?? ""}</td>
-                      <td className="p-1 text-right tabular-nums">
-                        {toMoney(c.currentBalance)}
-                      </td>
-                      <td className="p-1 text-right tabular-nums">
-                        {toMoney(c.udf250TotalSales)}
-                      </td>
+                      <td className="p-1 text-right tabular-nums">{toMoney(c.currentBalance)}</td>
+                      <td className="p-1 text-right tabular-nums">{toMoney(c.udf250TotalSales)}</td>
                     </tr>
                   ))
                 )}
@@ -1723,13 +1723,8 @@ async function deleteNote(noteId: string) {
                   Call Prep{callPrepFor ? ` • ${callPrepFor.customerName}` : ""}
                 </div>
                 {callPrepFor ? (
-                  <div className="text-xs text-gray-500 truncate">
-                    {callPrepFor.customerNo}
-                  </div>
+                  <div className="text-xs text-gray-500 truncate">{callPrepFor.customerNo}</div>
                 ) : null}
-
-
-
               </div>
               <button
                 type="button"
@@ -1766,9 +1761,7 @@ async function deleteNote(noteId: string) {
                         <span className="text-gray-500">Last invoice date:</span>{" "}
                         <span className="tabular-nums">
                           {callPrepData.stats.lastInvoice?.invoiceDate
-                            ? new Date(
-                                callPrepData.stats.lastInvoice.invoiceDate
-                              ).toLocaleDateString()
+                            ? new Date(callPrepData.stats.lastInvoice.invoiceDate).toLocaleDateString()
                             : "—"}
                         </span>
                       </div>
@@ -1780,9 +1773,7 @@ async function deleteNote(noteId: string) {
                   </div>
 
                   <div>
-                    <div className="font-medium text-sm mb-2">
-                      Top items (last 365 days) — qty
-                    </div>
+                    <div className="font-medium text-sm mb-2">Top items (last 365 days) — qty</div>
                     {callPrepData.itemIntel.topItemsLast365?.length ? (
                       <ul className="space-y-1">
                         {callPrepData.itemIntel.topItemsLast365.map((it) => (
@@ -1793,9 +1784,7 @@ async function deleteNote(noteId: string) {
                             <span className="min-w-0">
                               <span className="font-mono">{it.itemCode}</span>
                               {it.itemCodeDesc ? (
-                                <span className="ml-2 text-gray-600 truncate">
-                                  — {it.itemCodeDesc}
-                                </span>
+                                <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
                               ) : null}
                             </span>
                             <span className="tabular-nums text-gray-700">{it.qty}</span>
@@ -1821,9 +1810,7 @@ async function deleteNote(noteId: string) {
                             <span className="min-w-0">
                               <span className="font-mono">{it.itemCode}</span>
                               {it.itemCodeDesc ? (
-                                <span className="ml-2 text-gray-600 truncate">
-                                  — {it.itemCodeDesc}
-                                </span>
+                                <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
                               ) : null}
                             </span>
                             <span className="tabular-nums text-gray-700">{it.qty}</span>
@@ -1835,36 +1822,33 @@ async function deleteNote(noteId: string) {
                     )}
                   </div>
 
-                  {/* ✅ NEW: Pitch Next */}
-{false ? (
-  <div>
-    <div className="font-medium text-sm mb-2">Pitch Next</div>
-
-    {callPrepData?.itemIntel?.pitchNext?.length ? (
-      <ul className="space-y-1">
-        {callPrepData?.itemIntel?.pitchNext?.map((it: any) => (
-          <li
-            key={`pitch-${it.itemCode}-${it.reason}`}
-            className="flex items-baseline justify-between gap-3 text-sm"
-          >
-            <span className="min-w-0">
-              <span className="font-mono">{it.itemCode}</span>
-              {it.itemCodeDesc ? (
-                <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
-              ) : null}
-              <div className="text-[11px] text-blue-600">{it.reason}</div>
-            </span>
-            <span className="tabular-nums text-gray-700">{it.qty}</span>
-          </li>
-        ))}
-      </ul>
-    ) : (
-      <div className="text-sm text-gray-500">No pitch suggestions.</div>
-    )}
-  </div>
-) : null}
-
-
+                  {/* Pitch Next hidden */}
+                  {false ? (
+                    <div>
+                      <div className="font-medium text-sm mb-2">Pitch Next</div>
+                      {callPrepData?.itemIntel?.pitchNext?.length ? (
+                        <ul className="space-y-1">
+                          {callPrepData?.itemIntel?.pitchNext?.map((it: any) => (
+                            <li
+                              key={`pitch-${it.itemCode}-${it.reason}`}
+                              className="flex items-baseline justify-between gap-3 text-sm"
+                            >
+                              <span className="min-w-0">
+                                <span className="font-mono">{it.itemCode}</span>
+                                {it.itemCodeDesc ? (
+                                  <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
+                                ) : null}
+                                <div className="text-[11px] text-blue-600">{it.reason}</div>
+                              </span>
+                              <span className="tabular-nums text-gray-700">{it.qty}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-sm text-gray-500">No pitch suggestions.</div>
+                      )}
+                    </div>
+                  ) : null}
 
                   <div className="text-xs text-gray-500">
                     Scanned {callPrepData.itemIntel.invoicesScannedForItems} invoices •{" "}
@@ -1879,169 +1863,185 @@ async function deleteNote(noteId: string) {
         </div>
       ) : null}
 
-{/* Notes Drawer */}
-{notesOpen ? (
-  <div className="fixed inset-0 z-50">
-    <button
-      type="button"
-      className="absolute inset-0 bg-black/30"
-      aria-label="Close notes"
-      onClick={closeNotes}
-    />
-    <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-xl border-l flex flex-col">
-      <div className="p-3 border-b flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-semibold leading-5 truncate">
-            Notes{notesFor ? ` • ${notesFor.customerName}` : ""}
-          </div>
-          {notesFor ? (
-            <div className="text-xs text-gray-500 truncate">
-              {notesFor.customerNo}
-            </div>
-          ) : null}
-        </div>
-        <button
-          type="button"
-          className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-sm"
-          onClick={closeNotes}
-        >
-          ✕
-        </button>
-      </div>
-
-      <div className="p-3 border-b space-y-2">
-        <div className="text-xs font-semibold text-gray-700">Add Note</div>
-        <textarea
-          className="w-full border rounded px-2 py-2 text-sm"
-          rows={4}
-          placeholder="Type a note..."
-          value={newNoteText}
-          onChange={(e) => setNewNoteText(e.target.value)}
-        />
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs text-gray-600">Follow up date (optional)</div>
-          <input
-            type="date"
-            className="border rounded px-2 py-1 text-sm"
-            value={newNoteFollowUp}
-            onChange={(e) => setNewNoteFollowUp(e.target.value)}
-          />
-        </div>
-        <div className="flex justify-end">
+      {/* Notes Drawer */}
+      {notesOpen ? (
+        <div className="fixed inset-0 z-50">
           <button
             type="button"
-            onClick={addNote}
-            disabled={notesSaving || !newNoteText.trim()}
-            className={`px-3 py-2 rounded text-sm text-white ${
-              notesSaving || !newNoteText.trim()
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-gray-900 hover:bg-gray-800"
-            }`}
-          >
-            {notesSaving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-
-      <div className="p-3 overflow-auto space-y-3">
-        {notesLoading ? (
-          <div className="text-sm text-gray-600">Loading…</div>
-        ) : notesError ? (
-          <div className="text-sm text-red-700">{notesError}</div>
-        ) : notesRows.length === 0 ? (
-          <div className="text-sm text-gray-600">No notes yet.</div>
-        ) : (
-          notesRows.map((n) => {
-            const isEditing = editingNoteId === n.id;
-            const hl = noteHighlightClass(n);
-            return (
-              <div key={n.id} className={`rounded border p-2 ${hl}`}> 
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] text-gray-500">
-                      {fmtTs(n.createdAt)}
-                      {n.createdByName ? ` • ${n.createdByName}` : ""}
-                      {n.updatedAt ? ` • Updated ${fmtTs(n.updatedAt)}` : ""}
-                    </div>
-                    {(n as any).followUpDate ? (
-                      <div className="text-[11px] text-gray-700 mt-0.5">
-                        Follow up: <span className="font-semibold">{fmtDateOnly((n as any).followUpDate)}</span>
-                      </div>
-                    ) : null}
-                  </div>
-                  {!isEditing ? (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                        onClick={() => startEditNote(n)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
-                        onClick={() => deleteNote(n.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ) : null}
+            className="absolute inset-0 bg-black/30"
+            aria-label="Close notes"
+            onClick={closeNotes}
+          />
+          <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-xl border-l flex flex-col">
+            <div className="p-3 border-b flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold leading-5 truncate">
+                  Notes{notesFor ? ` • ${notesFor.customerName}` : ""}
                 </div>
-
-                {!isEditing ? (
-                  <div className="mt-2 text-sm whitespace-pre-wrap break-words">
-                    {n.text}
-                  </div>
-                ) : (
-                  <div className="mt-2 space-y-2">
-                    <textarea
-                      className="w-full border rounded px-2 py-2 text-sm"
-                      rows={4}
-                      value={editingNoteText}
-                      onChange={(e) => setEditingNoteText(e.target.value)}
-                    />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-gray-600">Follow up date (optional)</div>
-                      <input
-                        type="date"
-                        className="border rounded px-2 py-1 text-sm"
-                        value={editingNoteFollowUp}
-                        onChange={(e) => setEditingNoteFollowUp(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        className="px-3 py-1.5 rounded border bg-white hover:bg-gray-50 text-sm"
-                        onClick={cancelEditNote}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        className={`px-3 py-1.5 rounded text-sm text-white ${
-                          notesSaving || !editingNoteText.trim()
-                            ? "bg-gray-400 cursor-not-allowed"
-                            : "bg-gray-900 hover:bg-gray-800"
-                        }`}
-                        disabled={notesSaving || !editingNoteText.trim()}
-                        onClick={saveEditNote}
-                      >
-                        {notesSaving ? "Saving..." : "Save"}
-                      </button>
-                    </div>
-                  </div>
-                )}
+                {notesFor ? (
+                  <div className="text-xs text-gray-500 truncate">{notesFor.customerNo}</div>
+                ) : null}
               </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  </div>
-) : null}
+              <button
+                type="button"
+                className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-sm"
+                onClick={closeNotes}
+              >
+                ✕
+              </button>
+            </div>
 
+            <div className="p-3 border-b space-y-2">
+              <div className="text-xs font-semibold text-gray-700">Add Note</div>
+              <textarea
+                className="w-full border rounded px-2 py-2 text-sm"
+                rows={4}
+                placeholder="Type a note..."
+                value={newNoteText}
+                onChange={(e) => setNewNoteText(e.target.value)}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-gray-600">Follow up date (optional)</div>
+                <input
+                  type="date"
+                  className="border rounded px-2 py-1 text-sm"
+                  value={newNoteFollowUp}
+                  onChange={(e) => setNewNoteFollowUp(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={addNote}
+                  disabled={notesSaving || !newNoteText.trim()}
+                  className={`px-3 py-2 rounded text-sm text-white ${
+                    notesSaving || !newNoteText.trim()
+                      ? "bg-gray-400 cursor-not-allowed"
+                      : "bg-gray-900 hover:bg-gray-800"
+                  }`}
+                >
+                  {notesSaving ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </div>
+
+            <div className="p-3 overflow-auto space-y-3">
+              {notesLoading ? (
+                <div className="text-sm text-gray-600">Loading…</div>
+              ) : notesError ? (
+                <div className="text-sm text-red-700">{notesError}</div>
+              ) : notesRows.length === 0 ? (
+                <div className="text-sm text-gray-600">No notes yet.</div>
+              ) : (
+                notesRows.map((n) => {
+                  const isEditing = editingNoteId === n.id;
+                  const hl = noteHighlightClass(n);
+                  const pinned = Boolean((n as any).pinned);
+
+                  return (
+                    <div key={n.id} className={`rounded border p-2 ${hl}`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] text-gray-500">
+                            {fmtTs(n.createdAt)}
+                            {n.createdByName ? ` • ${n.createdByName}` : ""}
+                            {n.updatedAt ? ` • Updated ${fmtTs(n.updatedAt)}` : ""}
+                            {pinned ? <span className="ml-2 text-gray-900">• PINNED</span> : null}
+                          </div>
+                          {(n as any).followUpDate ? (
+                            <div className="text-[11px] text-gray-700 mt-0.5">
+                              Follow up:{" "}
+                              <span className="font-semibold">
+                                {fmtDateOnly((n as any).followUpDate)}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {!isEditing ? (
+                          <div className="flex gap-2 items-center">
+                            {/* ⭐ Pin */}
+                            <button
+  type="button"
+  className={`px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs ${
+    pinned ? "text-yellow-500 border-yellow-400" : "text-gray-700 border-gray-300"
+  }`}
+  onClick={() => togglePinNote(n)}
+  title={pinned ? "Unpin note" : "Pin note"}
+  disabled={notesSaving}
+>
+  {pinned ? "★" : "☆"}
+</button>
+
+                            <button
+                              type="button"
+                              className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                              onClick={() => startEditNote(n)}
+                            >
+                              Edit
+                            </button>
+
+                            <button
+                              type="button"
+                              className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs"
+                              onClick={() => deleteNote(n.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {!isEditing ? (
+                        <div className="mt-2 text-sm whitespace-pre-wrap break-words">{n.text}</div>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          <textarea
+                            className="w-full border rounded px-2 py-2 text-sm"
+                            rows={4}
+                            value={editingNoteText}
+                            onChange={(e) => setEditingNoteText(e.target.value)}
+                          />
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-xs text-gray-600">Follow up date (optional)</div>
+                            <input
+                              type="date"
+                              className="border rounded px-2 py-1 text-sm"
+                              value={editingNoteFollowUp}
+                              onChange={(e) => setEditingNoteFollowUp(e.target.value)}
+                            />
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 rounded border bg-white hover:bg-gray-50 text-sm"
+                              onClick={cancelEditNote}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className={`px-3 py-1.5 rounded text-sm text-white ${
+                                notesSaving || !editingNoteText.trim()
+                                  ? "bg-gray-400 cursor-not-allowed"
+                                  : "bg-gray-900 hover:bg-gray-800"
+                              }`}
+                              disabled={notesSaving || !editingNoteText.trim()}
+                              onClick={saveEditNote}
+                            >
+                              {notesSaving ? "Saving..." : "Save"}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

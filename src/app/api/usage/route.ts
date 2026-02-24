@@ -3,15 +3,7 @@ import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 
-function json(status: number, body: any) {
-  return new NextResponse(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Usage-Version": "ADMIN_USAGE_ROUTE_V1_ACTIVE_MS",
-    },
-  });
-}
+const VERSION = "USAGE_ROUTE_V6_RAW_HOURS+MINUTES_2026-02-23";
 
 function mustEnv(name: string) {
   const v = process.env[name];
@@ -51,11 +43,11 @@ function tsToDateMaybe(v: any): Date | null {
 }
 
 function computeSessionMs(d: any): number {
-  // ✅ your Firestore screenshot shows activeMs exists
+  // prefer activeMs if present
   const activeMs = Number(d.activeMs ?? d.activeMS ?? 0) || 0;
   if (activeMs > 0) return activeMs;
 
-  // fallback: endedAt - startedAt (or lastActiveAt)
+  // fallback to endedAt - startedAt (or lastActiveAt)
   const started = tsToDateMaybe(d.startedAt);
   const ended = tsToDateMaybe(d.endedAt ?? d.lastActiveAt);
   if (started && ended) {
@@ -70,17 +62,20 @@ export async function GET(req: Request) {
     ensureAdmin();
 
     const url = new URL(req.url);
-    const start = url.searchParams.get("start"); // YYYY-MM-DD
-    const end = url.searchParams.get("end"); // YYYY-MM-DD
+    const start = url.searchParams.get("start");
+    const end = url.searchParams.get("end");
     const daysParam = url.searchParams.get("days");
 
-    // Auth: Bearer token
     const authHeader =
       req.headers.get("authorization") ||
       req.headers.get("Authorization") ||
       "";
     const m = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (!m) return json(401, { error: "Missing Authorization Bearer token" });
+    if (!m) {
+      const res = NextResponse.json({ error: "Missing Authorization Bearer token", version: VERSION }, { status: 401 });
+      res.headers.set("X-Usage-Version", VERSION);
+      return res;
+    }
 
     const token = m[1];
     const decoded = await getAuth().verifyIdToken(token);
@@ -88,12 +83,14 @@ export async function GET(req: Request) {
 
     const db = getFirestore();
 
-    // Admin check
     const userSnap = await db.collection("users").doc(uid).get();
     const role = userSnap.exists ? (userSnap.data() as any)?.role : null;
-    if (role !== "admin") return json(403, { error: "Forbidden" });
+    if (role !== "admin") {
+      const res = NextResponse.json({ error: "Forbidden", version: VERSION }, { status: 403 });
+      res.headers.set("X-Usage-Version", VERSION);
+      return res;
+    }
 
-    // Determine date range
     let startDate: Date;
     let endDate: Date;
 
@@ -110,7 +107,6 @@ export async function GET(req: Request) {
     const startTs = Timestamp.fromDate(startDate);
     const endTs = Timestamp.fromDate(endDate);
 
-    // ✅ filter by endedAt (matches your docs)
     const sessionsSnap = await db
       .collection("usageSessions")
       .where("endedAt", ">=", startTs)
@@ -124,23 +120,8 @@ export async function GET(req: Request) {
       .where("type", "==", "export")
       .get();
 
-    const repAgg = new Map<
-      string,
-      {
-        uid: string;
-        name: string;
-        salesmanId: string;
-        sessions: number;
-        ms: number;
-        exports: number;
-        pages: Map<string, { path: string; sessions: number; ms: number; exports: number }>;
-      }
-    >();
-
-    const pageAgg = new Map<
-      string,
-      { path: string; sessions: number; ms: number; exports: number }
-    >();
+    const repAgg = new Map<string, any>();
+    const pageAgg = new Map<string, any>();
 
     function ensureRep(uidKey: string, base: any) {
       if (!repAgg.has(uidKey)) {
@@ -151,16 +132,10 @@ export async function GET(req: Request) {
           sessions: 0,
           ms: 0,
           exports: 0,
-          pages: new Map(),
+          pages: new Map<string, any>(),
         });
-      } else {
-        const r = repAgg.get(uidKey)!;
-        if (!r.name && base?.name) r.name = base.name;
-        if (!r.salesmanId && (base?.salesmanId || base?.salesperson)) {
-          r.salesmanId = base.salesmanId || base.salesperson;
-        }
       }
-      return repAgg.get(uidKey)!;
+      return repAgg.get(uidKey);
     }
 
     function ensurePage(map: Map<string, any>, path: string) {
@@ -168,7 +143,7 @@ export async function GET(req: Request) {
       return map.get(path);
     }
 
-    // Sessions -> time
+    // Sessions
     for (const doc of sessionsSnap.docs) {
       const d: any = doc.data();
       const uidKey = String(d.uid || "");
@@ -209,10 +184,15 @@ export async function GET(req: Request) {
     }
 
     const totalMs = Array.from(repAgg.values()).reduce((sum, r) => sum + (r.ms || 0), 0);
+    const totalHoursRaw = totalMs / 3600000;
+    const totalMinutesRaw = totalMs / 60000;
 
+    // ✅ Keep old keys your UI expects, but return RAW values so they don't round to 0
     const totals = {
       sessions: sessionsSnap.size,
-      activeHours: Number((totalMs / 3600000).toFixed(2)),
+      activeHours: totalHoursRaw,     // RAW (not rounded)
+      activeMinutes: totalMinutesRaw, // extra
+      activeMsTotal: totalMs,         // extra
     };
 
     const hoursPerRep = Array.from(repAgg.values())
@@ -220,7 +200,8 @@ export async function GET(req: Request) {
         uid: r.uid,
         name: r.name || "-",
         salesmanId: r.salesmanId || "-",
-        hours: Number((r.ms / 3600000).toFixed(2)),
+        hours: (r.ms || 0) / 3600000,     // RAW
+        minutes: (r.ms || 0) / 60000,     // extra
         sessions: r.sessions || 0,
       }))
       .sort((a, b) => b.hours - a.hours);
@@ -237,7 +218,8 @@ export async function GET(req: Request) {
     const pageUsage = Array.from(pageAgg.values())
       .map((p) => ({
         path: p.path,
-        hours: Number((p.ms / 3600000).toFixed(2)),
+        hours: (p.ms || 0) / 3600000,   // RAW
+        minutes: (p.ms || 0) / 60000,   // extra
         sessions: p.sessions || 0,
         exports: p.exports || 0,
       }))
@@ -248,25 +230,32 @@ export async function GET(req: Request) {
       name: r.name || "-",
       salesmanId: r.salesmanId || "-",
       pages: Array.from(r.pages.values())
-        .map((p) => ({
+        .map((p: any) => ({
           path: p.path,
-          hours: Number((p.ms / 3600000).toFixed(2)),
+          hours: (p.ms || 0) / 3600000,
+          minutes: (p.ms || 0) / 60000,
           sessions: p.sessions || 0,
           exports: p.exports || 0,
         }))
-        .sort((a, b) => b.sessions - a.sessions),
+        .sort((a: any, b: any) => b.sessions - a.sessions),
     }));
 
-    return json(200, {
-      version: "ADMIN_USAGE_ROUTE_V1_ACTIVE_MS",
+    const body = {
+      version: VERSION,
       range: { start: startDate.toISOString(), end: endDate.toISOString() },
       totals,
       hoursPerRep,
       exportsPerRep,
       pageUsage,
       pageUsageByRep,
-    });
+    };
+
+    const res = NextResponse.json(body, { status: 200 });
+    res.headers.set("X-Usage-Version", VERSION);
+    return res;
   } catch (e: any) {
-    return json(500, { error: e?.message || "Server error" });
+    const res = NextResponse.json({ error: e?.message || "Server error", version: VERSION }, { status: 500 });
+    res.headers.set("X-Usage-Version", VERSION);
+    return res;
   }
 }

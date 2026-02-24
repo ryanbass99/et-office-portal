@@ -46,10 +46,22 @@ function cleanStr(v) {
 }
 
 function parseNumber(v) {
-  const s = cleanStr(v);
-  if (!s) return 0;
-  const n = Number(s.replaceAll(",", "").replaceAll("$", ""));
-  return Number.isFinite(n) ? n : 0;
+  const s0 = cleanStr(v);
+  if (!s0) return 0;
+
+  // Remove commas and $ signs
+  let s = s0.replaceAll(",", "").replaceAll("$", "").trim();
+
+  // Handle Sage negative formats: (108.78) or 108.78-
+  const isParenNeg = s.startsWith("(") && s.endsWith(")");
+  const isTrailNeg = s.endsWith("-");
+
+  s = s.replace(/[()]/g, "").replace(/-$/, "");
+
+  const n = Number(s);
+  if (!Number.isFinite(n)) return 0;
+
+  return (isParenNeg || isTrailNeg) ? -n : n;
 }
 
 /** MM/DD/YYYY -> Date (local). If parse fails, returns null. */
