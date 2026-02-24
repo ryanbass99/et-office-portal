@@ -289,20 +289,10 @@ export default function CustomersPage() {
 
   // item filter
   const [itemInput, setItemInput] = useState<string>("");
-  // NOTE: Item filter supports either a single item code OR a description search that can
-  // resolve to multiple item codes.
-  const [activeItemCodes, setActiveItemCodes] = useState<string[]>([]);
-  const [activeItemDisplay, setActiveItemDisplay] = useState<string>("");
+  const [activeItemCode, setActiveItemCode] = useState<string>("");
   const [itemCustomerSet, setItemCustomerSet] = useState<Set<string> | null>(null);
   const [itemLoading, setItemLoading] = useState<boolean>(false);
   const [itemError, setItemError] = useState<string>("");
-
-  // item suggestions (typeahead for item code/description)
-  const [itemSuggestions, setItemSuggestions] = useState<Array<{ code: string; desc: string }>>([]);
-  const [itemSuggestOpen, setItemSuggestOpen] = useState<boolean>(false);
-  const [itemSuggestLoading, setItemSuggestLoading] = useState<boolean>(false);
-  const [itemSuggestError, setItemSuggestError] = useState<string>("");
-
 
   // export
   const [exporting, setExporting] = useState<boolean>(false);
@@ -409,9 +399,6 @@ export default function CustomersPage() {
   }
 
   const searchTimer = useRef<any>(null);
-  const itemSuggestTimer = useRef<any>(null);
-  const itemSuggestSeq = useRef<number>(0);
-
 
   // Notes realtime subscription (customers/{customerNo}/notes)
   useEffect(() => {
@@ -675,30 +662,10 @@ email: v.email ?? "",
     setVisibleCount(PAGE_SIZE);
   }
 
-  function looksLikeItemCode(raw: string) {
-    const code = normalizeItemCode(raw);
-
-    // Treat as an "item code" only if it has digits (e.g., 1151, K604).
-    // IMPORTANT: Do NOT treat plain words like "POKEMON" as item codes.
-    if (/^\d{3,}$/.test(code)) return true;
-    if (/^[A-Z]{1,4}\d{1,6}$/.test(code)) return true;
-
-    return false;
-  }
-
-  async function fetchCustomersWhoOrderedItems(itemCodes: string[], sp: string) {
-    const codes = Array.from(
-      new Set(
-        (itemCodes || [])
-          .map((x) => normalizeItemCode(x))
-          .filter(Boolean)
-          .slice(0, 25)
-      )
-    );
-
-    if (!codes.length) {
-      setActiveItemCodes([]);
-      setActiveItemDisplay("");
+  async function fetchCustomersWhoOrderedItem(itemCode: string, sp: string) {
+    const code = normalizeItemCode(itemCode);
+    if (!code) {
+      setActiveItemCode("");
       setItemCustomerSet(null);
       return;
     }
@@ -710,21 +677,18 @@ email: v.email ?? "",
     setItemLoading(true);
 
     try {
-      const snaps = await Promise.all(
-        codes.map((code) => getDoc(doc(db, "itemCustomerIndex", `${code}__${rep}`)))
-      );
+      const docId = `${code}__${rep}`;
+      const ref = doc(db, "itemCustomerIndex", docId);
+      const snap = await getDoc(ref);
 
-      const set = new Set<string>();
-      for (const snap of snaps) {
-        if (!snap.exists()) continue;
-        const v = snap.data() as any;
-        const list: string[] = Array.isArray(v.customerNos) ? v.customerNos : [];
-        for (const x of list) {
-          const k = String(x ?? "").trim();
-          if (k) set.add(k);
-        }
+      if (!snap.exists()) {
+        setItemCustomerSet(new Set());
+        return;
       }
 
+      const v = snap.data() as any;
+      const list: string[] = Array.isArray(v.customerNos) ? v.customerNos : [];
+      const set = new Set<string>(list.map((x) => String(x ?? "").trim()).filter(Boolean));
       setItemCustomerSet(set);
     } catch (e: any) {
       console.error(e);
@@ -734,158 +698,6 @@ email: v.email ?? "",
       );
     } finally {
       setItemLoading(false);
-    }
-  }
-
-  async function findItemCodesByDescription(termRaw: string): Promise<string[]> {
-    const raw = String(termRaw || "").trim();
-    if (!raw) return [];
-
-    const token = raw
-      .toUpperCase()
-      .replace(/[^A-Z0-9 ]/g, " ")
-      .split(/\s+/)
-      .filter(Boolean)[0];
-
-    if (!token) return [];
-
-    const out = new Set<string>();
-    const col = collection(db, "itemsMaster");
-
-    // If user typed 1 character, use a prefix range on ItemCodeDesc so they see results immediately.
-    // (Your ItemCodeDesc values are uppercase like "POKEMON ULTRA RARE ...")
-    if (token.length === 1) {
-      try {
-        const q1 = query(
-          col,
-          where("ItemCodeDesc" as any, ">=", token),
-          where("ItemCodeDesc" as any, "<=", token + "\uf8ff"),
-          orderBy("ItemCodeDesc" as any),
-          limit(15)
-        );
-        const snap = await getDocs(q1);
-        snap.forEach((d) => {
-          const v = d.data() as any;
-          const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-          if (code) out.add(code);
-        });
-        return Array.from(out);
-      } catch {
-        // ignore; fall through
-      }
-    }
-
-    // Best match: word-start search anywhere in the description via precomputed searchPrefixes
-    try {
-      const q2 = query(col, where("searchPrefixes" as any, "array-contains", token), limit(25));
-      const snap = await getDocs(q2);
-      snap.forEach((d) => {
-        const v = d.data() as any;
-        const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-        if (code) out.add(code);
-      });
-      if (out.size) return Array.from(out);
-    } catch {
-      // ignore
-    }
-
-    // Fallback: prefix range on ItemCodeDesc (handles cases where prefixes aren't generated as expected)
-    try {
-      const q3 = query(
-        col,
-        where("ItemCodeDesc" as any, ">=", token),
-        where("ItemCodeDesc" as any, "<=", token + "\uf8ff"),
-        orderBy("ItemCodeDesc" as any),
-        limit(25)
-      );
-      const snap = await getDocs(q3);
-      snap.forEach((d) => {
-        const v = d.data() as any;
-        const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-        if (code) out.add(code);
-      });
-    } catch {
-      // ignore
-    }
-
-    return Array.from(out);
-  }
-
-
-  async function fetchItemSuggestions(termRaw: string): Promise<Array<{ code: string; desc: string }>> {
-    const raw = String(termRaw || "").trim();
-    if (!raw) return [];
-
-    const token = raw
-      .toUpperCase()
-      .replace(/[^A-Z0-9 ]/g, " ")
-      .split(/\s+/)
-      .filter(Boolean)[0];
-
-    if (!token) return [];
-
-    const col = collection(db, "itemsMaster");
-    const out: Array<{ code: string; desc: string }> = [];
-
-    // If it looks like an item code, suggest by ItemCode prefix
-    if (looksLikeItemCode(token)) {
-      try {
-        const q1 = query(
-          col,
-          where("ItemCode" as any, ">=", token),
-          where("ItemCode" as any, "<=", token + "\uf8ff"),
-          orderBy("ItemCode" as any),
-          limit(10)
-        );
-        const snap = await getDocs(q1);
-        snap.forEach((d) => {
-          const v = d.data() as any;
-          const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-          const desc = String(v.ItemCodeDesc ?? v.itemCodeDesc ?? "").trim();
-          if (code) out.push({ code, desc });
-        });
-        return out;
-      } catch {
-        return out;
-      }
-    }
-
-    // 1-letter: use ItemCodeDesc prefix range (so user sees something immediately)
-    if (token.length === 1) {
-      try {
-        const q2 = query(
-          col,
-          where("ItemCodeDesc" as any, ">=", token),
-          where("ItemCodeDesc" as any, "<=", token + "\uf8ff"),
-          orderBy("ItemCodeDesc" as any),
-          limit(10)
-        );
-        const snap = await getDocs(q2);
-        snap.forEach((d) => {
-          const v = d.data() as any;
-          const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-          const desc = String(v.ItemCodeDesc ?? v.itemCodeDesc ?? "").trim();
-          if (code) out.push({ code, desc });
-        });
-        return out;
-      } catch {
-        return out;
-      }
-    }
-
-    // 2+ letters: word-start matches anywhere via searchPrefixes
-    try {
-      const q3 = query(col, where("searchPrefixes" as any, "array-contains", token), limit(10));
-      const snap = await getDocs(q3);
-      snap.forEach((d) => {
-        const v = d.data() as any;
-        const code = normalizeItemCode(v.ItemCode ?? v.itemCode ?? d.id);
-        const desc = String(v.ItemCodeDesc ?? v.itemCodeDesc ?? "").trim();
-        if (code) out.push({ code, desc });
-      });
-      return out;
-    } catch {
-      return out;
     }
   }
 
@@ -1053,8 +865,7 @@ email: v.email ?? "",
       setQuickView("");
       setInvertItemFilter(true);
       setItemInput(item);
-      setActiveItemCodes([item]);
-      setActiveItemDisplay(item);
+      setActiveItemCode(item);
 
       setSortKey("sales");
       setSortDir("desc");
@@ -1080,8 +891,7 @@ email: v.email ?? "",
       setStateFilter("");
       setTop50Only(false);
       setInvertItemFilter(false);
-      setActiveItemCodes([]);
-      setActiveItemDisplay("");
+      setActiveItemCode("");
       setItemInput("");
       setActivityBucket("");
 
@@ -1138,48 +948,9 @@ email: v.email ?? "",
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  // Item typeahead (show matching items as you type)
-  useEffect(() => {
-    const raw = (itemInput || "").trim();
-    if (itemSuggestTimer.current) clearTimeout(itemSuggestTimer.current);
-
-    if (!raw) {
-      setItemSuggestLoading(false);
-      setItemSuggestError("");
-      setItemSuggestions([]);
-      setItemSuggestOpen(false);
-      return;
-    }
-
-    // open dropdown as soon as they type
-    setItemSuggestOpen(true);
-    setItemSuggestLoading(true);
-    setItemSuggestError("");
-
-    const seq = ++itemSuggestSeq.current;
-
-    itemSuggestTimer.current = setTimeout(async () => {
-      try {
-        const results = await fetchItemSuggestions(raw);
-        // ignore stale responses
-        if (seq !== itemSuggestSeq.current) return;
-        setItemSuggestions(results);
-      } catch (e: any) {
-        if (seq !== itemSuggestSeq.current) return;
-        setItemSuggestions([]);
-        setItemSuggestError(String(e?.message ?? e ?? "Error"));
-      } finally {
-        if (seq !== itemSuggestSeq.current) return;
-        setItemSuggestLoading(false);
-      }
-    }, 200);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemInput]);
-
   // Only fetch buyers list once BOTH item + rep are known
   useEffect(() => {
-    if (!activeItemCodes.length) {
+    if (!activeItemCode) {
       setItemCustomerSet(null);
       setItemError("");
       setItemLoading(false);
@@ -1187,10 +958,10 @@ email: v.email ?? "",
     }
     if (!salespersonNo) return;
 
-    fetchCustomersWhoOrderedItems(activeItemCodes, salespersonNo);
+    fetchCustomersWhoOrderedItem(activeItemCode, salespersonNo);
     setVisibleCount(PAGE_SIZE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeItemCodes, salespersonNo]);
+  }, [activeItemCode, salespersonNo]);
 
   const filteredAll = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -1227,7 +998,7 @@ email: v.email ?? "",
       if (statusFilter && String(c.status ?? "") !== statusFilter) return false;
       if (stateFilter && String(c.stateUpper ?? "") !== stateFilter) return false;
 
-      if (activeItemCodes.length) {
+      if (activeItemCode) {
         if (!itemCustomerSet) return false;
         const has = itemCustomerSet.has(String(c.customerNo ?? "").trim());
         if (invertItemFilter) {
@@ -1257,7 +1028,7 @@ email: v.email ?? "",
     activityBucket,
     statusFilter,
     stateFilter,
-    activeItemCodes,
+    activeItemCode,
     itemCustomerSet,
     invertItemFilter,
   ]);
@@ -1583,13 +1354,8 @@ email: v.email ?? "",
                 {invertItemFilter
                   ? "Show accounts that have NOT ordered item code:"
                   : "Show accounts that ordered item code:"}
-                {activeItemCodes.length ? (
-                  <span className="ml-2 font-semibold text-gray-900">
-                    {activeItemDisplay || activeItemCodes[0]}
-                    {activeItemCodes.length > 1 ? (
-                      <span className="ml-2 text-gray-500 font-normal">({activeItemCodes.length} items)</span>
-                    ) : null}
-                  </span>
+                {activeItemCode ? (
+                  <span className="ml-2 font-semibold text-gray-900">{activeItemCode}</span>
                 ) : (
                   <span className="ml-2 text-gray-400">(none)</span>
                 )}
@@ -1599,8 +1365,7 @@ email: v.email ?? "",
               <div className="flex flex-wrap gap-2">
                 {ITEM_BUTTONS.map((b) => {
                   const code = normalizeItemCode(b.code);
-                  const active =
-                    !!code && activeItemCodes.length === 1 && activeItemCodes[0] === code && !invertItemFilter;
+                  const active = !!code && activeItemCode === code && !invertItemFilter;
                   return (
                     <button
                       key={b.label}
@@ -1614,8 +1379,7 @@ email: v.email ?? "",
                         if (!code) return;
                         setInvertItemFilter(false);
                         setItemInput(code);
-                        setActiveItemCodes([code]);
-                        setActiveItemDisplay(code);
+                        setActiveItemCode(code);
                         setVisibleCount(PAGE_SIZE);
                       }}
                       disabled={!code}
@@ -1629,151 +1393,45 @@ email: v.email ?? "",
                 <button
                   type="button"
                   className={`px-3 py-1 rounded-full border text-xs ${
-                    !activeItemCodes.length
+                    !activeItemCode
                       ? "bg-gray-100 text-gray-500 border-gray-200 cursor-not-allowed"
                       : "bg-white hover:bg-gray-50"
                   }`}
                   onClick={() => {
                     setInvertItemFilter(false);
                     setItemInput("");
-                    setActiveItemCodes([]);
-                    setActiveItemDisplay("");
+                    setActiveItemCode("");
                     setItemCustomerSet(null);
                     setItemError("");
                     setVisibleCount(PAGE_SIZE);
                   }}
-                  disabled={!activeItemCodes.length}
+                  disabled={!activeItemCode}
                 >
                   Clear Item
                 </button>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                
-                <div className="relative w-full max-w-[240px]">
-                  <input
-                    className="w-full border rounded px-3 py-2 text-sm"
-                    placeholder="Enter item code or description (e.g., K411 or pokemon)"
-                    value={itemInput}
-                    onChange={(e) => {
-                      setItemInput(e.target.value);
-                      setItemError("");
-                    }}
-                    onFocus={() => {
-                      if ((itemInput || "").trim()) setItemSuggestOpen(true);
-                    }}
-                    onBlur={() => {
-                      // let clicks on suggestions register
-                      setTimeout(() => setItemSuggestOpen(false), 150);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const raw = (itemInput || "").trim();
-                        if (!raw) return;
-
-                        (async () => {
-                          setInvertItemFilter(false);
-                          setItemError("");
-                          setItemCustomerSet(null);
-
-                          if (looksLikeItemCode(raw)) {
-                            const code = normalizeItemCode(raw);
-                            setActiveItemCodes([code]);
-                            setActiveItemDisplay(code);
-                            setItemSuggestOpen(false);
-                            return;
-                          }
-
-                          // Treat input as item description keyword (ex: "pokemon").
-                          // Resolve to one or more item codes, then filter customers.
-                          setActiveItemDisplay(raw);
-                          const codes = await findItemCodesByDescription(raw);
-                          if (!codes.length) {
-                            setActiveItemCodes([]);
-                            setItemCustomerSet(new Set());
-                            setItemError(`No items found matching: ${raw}`);
-                            return;
-                          }
-                          setActiveItemCodes(codes);
-                          setItemSuggestOpen(false);
-                        })();
-                      }
-                    }}
-                  />
-
-                  {itemSuggestOpen ? (
-                    <div className="absolute z-50 mt-1 w-full rounded border bg-white shadow">
-                      {itemSuggestLoading ? (
-                        <div className="p-2 text-xs text-gray-500">Searching…</div>
-                      ) : itemSuggestError ? (
-                        <div className="p-2 text-xs text-red-700">{itemSuggestError}</div>
-                      ) : itemSuggestions.length ? (
-                        <div className="max-h-64 overflow-auto">
-                          {itemSuggestions.map((s) => (
-                            <button
-                              key={s.code}
-                              type="button"
-                              className="w-full text-left px-2 py-2 hover:bg-gray-50 border-b last:border-b-0"
-                              onMouseDown={(ev) => ev.preventDefault()}
-                              onClick={() => {
-                                setInvertItemFilter(false);
-                                setItemError("");
-                                setItemCustomerSet(null);
-
-                                setItemInput(s.code);
-                                setActiveItemCodes([s.code]);
-                                setActiveItemDisplay(s.desc ? `${s.code} - ${s.desc}` : s.code);
-                                setVisibleCount(PAGE_SIZE);
-                                setItemSuggestOpen(false);
-                              }}
-                            >
-                              <div className="text-sm font-medium">{s.code}</div>
-                              {s.desc ? (
-                                <div className="text-xs text-gray-600 truncate">{s.desc}</div>
-                              ) : null}
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="p-2 text-xs text-gray-500">
-                          No matches{(itemInput || "").trim().length < 2 && !looksLikeItemCode(itemInput)
-                            ? " (keep typing)"
-                            : ""}
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-
+                <input
+                  className="w-full max-w-[240px] border rounded px-3 py-2 text-sm"
+                  placeholder="Enter item code (e.g., K411)"
+                  value={itemInput}
+                  onChange={(e) => setItemInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const code = normalizeItemCode(itemInput);
+                      setInvertItemFilter(false);
+                      setActiveItemCode(code);
+                    }
+                  }}
+                />
                 <button
                   type="button"
                   className="px-4 py-2 rounded border bg-white hover:bg-gray-100 text-sm"
                   onClick={() => {
-                    const raw = (itemInput || "").trim();
-                    if (!raw) return;
-
-                    (async () => {
-                      setInvertItemFilter(false);
-                      setItemError("");
-                      setItemCustomerSet(null);
-
-                      if (looksLikeItemCode(raw)) {
-                        const code = normalizeItemCode(raw);
-                        setActiveItemCodes([code]);
-                        setActiveItemDisplay(code);
-                        return;
-                      }
-
-                      setActiveItemDisplay(raw);
-                      const codes = await findItemCodesByDescription(raw);
-                      if (!codes.length) {
-                        setActiveItemCodes([]);
-                        setItemCustomerSet(new Set());
-                        setItemError(`No items found matching: ${raw}`);
-                        return;
-                      }
-                      setActiveItemCodes(codes);
-                    })();
+                    const code = normalizeItemCode(itemInput);
+                    setInvertItemFilter(false);
+                    setActiveItemCode(code);
                   }}
                 >
                   Apply
