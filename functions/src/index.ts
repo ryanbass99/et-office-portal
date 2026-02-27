@@ -59,36 +59,51 @@ export const generateSalesSheetThumb = onObjectFinalized(
       // Scale controls thumb size
       const viewport = page.getViewport({ scale: 2.75 });
 
-// Render full page first
-const fullCanvas = createCanvas(
-  Math.ceil(viewport.width),
-  Math.ceil(viewport.height)
-);
-const fullCtx = fullCanvas.getContext("2d");
+      // Render full page first
+      const fullCanvas = createCanvas(
+        Math.ceil(viewport.width),
+        Math.ceil(viewport.height)
+      );
+      const fullCtx = fullCanvas.getContext("2d");
 
-await page.render({
-  canvasContext: fullCtx as any,
-  viewport,
-}).promise;
+      await page.render({
+        canvasContext: fullCtx as any,
+        viewport,
+      }).promise;
 
-// ---- CROP SETTINGS (tuned for your sales sheets) ----
-// Take a "hero" crop from the top portion.
-// Adjust these if needed after one test.
-const cropX = 0;
-const cropY = 0;
-const cropW = Math.min(fullCanvas.width, Math.floor(fullCanvas.width * 0.72)); // left ~72%
-const cropH = Math.min(fullCanvas.height, Math.floor(fullCanvas.height * 0.52)); // top ~52%
+      // ---- CROP SETTINGS (tuned for your sales sheets) ----
+      // Take a "hero" crop from the top portion.
+      // Adjust these if needed after one test.
+      const cropX = 0;
+      const cropY = 0;
+      const cropW = Math.min(
+        fullCanvas.width,
+        Math.floor(fullCanvas.width * 0.72) // left ~72%
+      );
+      const cropH = Math.min(
+        fullCanvas.height,
+        Math.floor(fullCanvas.height * 0.52) // top ~52%
+      );
 
-const cropCanvas = createCanvas(cropW, cropH);
-const cropCtx = cropCanvas.getContext("2d");
+      const cropCanvas = createCanvas(cropW, cropH);
+      const cropCtx = cropCanvas.getContext("2d");
 
-// drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
-cropCtx.drawImage(fullCanvas as any, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      // drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
+      cropCtx.drawImage(
+        fullCanvas as any,
+        cropX,
+        cropY,
+        cropW,
+        cropH,
+        0,
+        0,
+        cropW,
+        cropH
+      );
 
-// Save cropped PNG
-const pngBuffer = cropCanvas.toBuffer("image/png");
-await fs.writeFile(tmpPng, pngBuffer);
-
+      // Save cropped PNG
+      const pngBuffer = cropCanvas.toBuffer("image/png");
+      await fs.writeFile(tmpPng, pngBuffer);
 
       // 4) Upload PNG thumb
       await bucket.upload(tmpPng, {
@@ -106,3 +121,6 @@ await fs.writeFile(tmpPng, pngBuffer);
     }
   }
 );
+
+// ✅ scheduled cleanup for AI Product Finder
+

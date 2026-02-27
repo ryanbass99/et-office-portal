@@ -64,12 +64,7 @@ type OrderGroup = {
 };
 
 function getOrderKey(l: Line) {
-  return (
-    l.orderNo ||
-    l.salesOrderNo ||
-    l.orderNumber ||
-    "" // fallback
-  );
+  return l.orderNo || l.salesOrderNo || l.orderNumber || ""; // fallback
 }
 
 function getItemLabel(ln: any) {
@@ -159,7 +154,9 @@ export default function AdminOpenSalesOrdersPage() {
       const map = new Map<string, string>(); // code -> label
       for (const d of snap.docs) {
         const data: any = d.data();
-        const code = (data.salesperson || data.salespersonNo || "").toString().trim();
+        const code = (data.salesperson || data.salespersonNo || "")
+          .toString()
+          .trim();
         if (!code) continue;
 
         // label "0001" as In House always
@@ -169,7 +166,14 @@ export default function AdminOpenSalesOrdersPage() {
         }
 
         // otherwise best-available name
-        const name = (data.name || data.displayName || data.email || code).toString().trim();
+        const name = (
+          data.name ||
+          data.displayName ||
+          data.email ||
+          code
+        )
+          .toString()
+          .trim();
         // only set if not already present (first wins)
         if (!map.has(code)) map.set(code, name);
       }
@@ -196,8 +200,6 @@ export default function AdminOpenSalesOrdersPage() {
     (async () => {
       setLoading(true);
       try {
-        // NOTE: your screenshot shows salespersonNo in openSalesOrderStats.
-        // Your lines almost certainly use salespersonNo too.
         const qLines = query(
           collection(db, "openSalesOrderLines"),
           where("salespersonNo", "==", selectedCode),
@@ -206,9 +208,10 @@ export default function AdminOpenSalesOrdersPage() {
 
         const snap = await getDocs(qLines);
         const lines: Line[] = snap.docs
-  .map((d) => ({ id: d.id, ...(d.data() as any) }))
-  .filter((ln: any) => String(ln.itemCode ?? ln.item ?? "").trim() !== "195");
-
+          .map((d) => ({ id: d.id, ...(d.data() as any) }))
+          .filter(
+            (ln: any) => String(ln.itemCode ?? ln.item ?? "").trim() !== "195"
+          );
 
         const byOrder = new Map<string, OrderGroup>();
 
@@ -247,8 +250,12 @@ export default function AdminOpenSalesOrdersPage() {
 
         // sort newest first (best-effort)
         const rows = Array.from(byOrder.values()).sort((a, b) => {
-          const ad = a.orderDate?.toDate ? a.orderDate.toDate().getTime() : new Date(a.orderDate || 0).getTime();
-          const bd = b.orderDate?.toDate ? b.orderDate.toDate().getTime() : new Date(b.orderDate || 0).getTime();
+          const ad = a.orderDate?.toDate
+            ? a.orderDate.toDate().getTime()
+            : new Date(a.orderDate || 0).getTime();
+          const bd = b.orderDate?.toDate
+            ? b.orderDate.toDate().getTime()
+            : new Date(b.orderDate || 0).getTime();
           return (bd || 0) - (ad || 0);
         });
 
@@ -260,11 +267,17 @@ export default function AdminOpenSalesOrdersPage() {
   }, [isAdmin, selectedCode]);
 
   const filteredOrders = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    if (!s) return orders;
+    const raw = search.trim().toLowerCase();
+    if (!raw) return orders;
+
+    // Support multi-term search: every token must match somewhere.
+    const tokens = raw
+      .split(/\s+/g)
+      .map((t) => t.trim())
+      .filter(Boolean);
 
     return orders.filter((o) => {
-      const hay = [
+      const headerHay = [
         o.orderKey,
         o.customerNo,
         o.customerName,
@@ -277,7 +290,15 @@ export default function AdminOpenSalesOrdersPage() {
         .join(" ")
         .toLowerCase();
 
-      return hay.includes(s);
+      // Include line-level searchable text (item + description)
+      const linesHay = (o.lines || [])
+        .map((ln) => `${getItemLabel(ln)} ${getDescLabel(ln)}`)
+        .join(" ")
+        .toLowerCase();
+
+      const hay = `${headerHay} ${linesHay}`;
+
+      return tokens.every((t) => hay.includes(t));
     });
   }, [orders, search]);
 
@@ -287,7 +308,9 @@ export default function AdminOpenSalesOrdersPage() {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-2">Open Sales Orders</h1>
-        <div className="text-sm text-gray-600">You don’t have access to this page.</div>
+        <div className="text-sm text-gray-600">
+          You don’t have access to this page.
+        </div>
       </div>
     );
   }
@@ -297,13 +320,10 @@ export default function AdminOpenSalesOrdersPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Open Sales Orders</h1>
+          <div className="text-sm text-gray-600">Salesperson: {selectedCode}</div>
           <div className="text-sm text-gray-600">
-  Salesperson: {selectedCode}
-</div>
-<div className="text-sm text-gray-600">
-  Total Open Orders: {filteredOrders.length}
-</div>
-
+            Total Open Orders: {filteredOrders.length}
+          </div>
         </div>
 
         <div className="w-full max-w-md">
@@ -325,7 +345,9 @@ export default function AdminOpenSalesOrdersPage() {
             type="button"
             onClick={() => setSelectedCode(sp.code)}
             className={`px-3 py-1 rounded-full border text-sm ${
-              selectedCode === sp.code ? "bg-gray-900 text-white border-gray-900" : "bg-white"
+              selectedCode === sp.code
+                ? "bg-gray-900 text-white border-gray-900"
+                : "bg-white"
             }`}
             title={`Salesperson: ${sp.code}`}
           >
@@ -353,14 +375,16 @@ export default function AdminOpenSalesOrdersPage() {
                   <div className="text-sm text-gray-700">
                     {o.shipToName || o.customerName || ""}
                     {o.shipToCity || o.shipToState
-                      ? ` • ${(o.shipToCity || "").toString()} ${(o.shipToState || "").toString()}`.trim()
+                      ? ` • ${(o.shipToCity || "").toString()} ${(o.shipToState || "")
+                          .toString()}`.trim()
                       : ""}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  
-                  <span className="text-sm bg-gray-100 px-2 py-1 rounded">Total Qty: {o.totalQty}</span>
+                  <span className="text-sm bg-gray-100 px-2 py-1 rounded">
+                    Total Qty: {o.totalQty}
+                  </span>
                 </div>
               </div>
 

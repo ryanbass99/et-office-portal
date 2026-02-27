@@ -24,7 +24,8 @@ export default function AdminPage() {
             <span className="font-medium">Open Sales Orders</span>
             <span className="text-gray-500">→</span>
           </Link>
-        </div>
+
+          </div>
       </div>
     </div>
   );

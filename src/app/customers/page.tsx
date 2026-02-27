@@ -19,6 +19,8 @@ import {
   startAfter,
   where,
   type DocumentSnapshot,
+  setDoc,
+  writeBatch, // ✅ added
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -48,7 +50,6 @@ type Customer = {
   inactiveDays?: number | string;
 
   buyerEmail?: string;
-
   buyer2Email?: string;
 
   creditHoldBool?: boolean;
@@ -78,6 +79,21 @@ type Note = {
   createdByUid?: string;
   createdByName?: string;
   updatedByUid?: string;
+
+  // ✅ optional metadata for group notes
+  isGroupNote?: boolean;
+  groupId?: string | null;
+  groupNoteId?: string | null;
+  sourceCustomerNo?: string | null;
+};
+
+type SalesmanGroup = {
+  id: string;
+  ownerUid: string;
+  ownerSalespersonNo?: string;
+  name: string;
+  createdAt?: any;
+  updatedAt?: any;
 };
 
 function fmtTs(ts: any) {
@@ -303,10 +319,309 @@ export default function CustomersPage() {
   const [itemSuggestLoading, setItemSuggestLoading] = useState<boolean>(false);
   const [itemSuggestError, setItemSuggestError] = useState<string>("");
 
-
   // export
   const [exporting, setExporting] = useState<boolean>(false);
   const [userEmail, setUserEmail] = useState<string>("");
+
+  // current signed-in uid (for ownership)
+  const [currentUid, setCurrentUid] = useState<string>("");
+
+  // ---- Groups (rep-owned) ----
+  const [groupModalOpen, setGroupModalOpen] = useState<boolean>(false);
+  const [groupFor, setGroupFor] = useState<Customer | null>(null);
+  const [groupsLoading, setGroupsLoading] = useState<boolean>(false);
+  const [groupsError, setGroupsError] = useState<string>("");
+  const [groups, setGroups] = useState<SalesmanGroup[]>([]);
+  const [groupMembership, setGroupMembership] = useState<Record<string, boolean>>({});
+  const [groupSaving, setGroupSaving] = useState<boolean>(false);
+  const [newGroupName, setNewGroupName] = useState<string>("");
+
+  // ---- Group filter pills (below item code box) ----
+  const [ownerGroups, setOwnerGroups] = useState<SalesmanGroup[]>([]);
+  const [ownerGroupsLoading, setOwnerGroupsLoading] = useState<boolean>(false);
+  const [ownerGroupsError, setOwnerGroupsError] = useState<string>("");
+  const [activeGroupId, setActiveGroupId] = useState<string>(""); // "" = no group filter
+  const [groupCustomerSet, setGroupCustomerSet] = useState<Set<string> | null>(null);
+  const [groupFilterLoading, setGroupFilterLoading] = useState<boolean>(false);
+  const [groupFilterError, setGroupFilterError] = useState<string>("");
+
+  const ownerUidForGroups = useMemo(() => {
+    // If admin has a rep selected, groups belong to that rep's UID
+    if (isAdmin && selectedSalespersonNo) {
+      const sp = normalizeSalespersonNo(selectedSalespersonNo);
+      const found = salespeople.find((x) => x.salespersonNo === sp);
+      return found?.uid || currentUid;
+    }
+    // otherwise current signed-in user owns the groups
+    return currentUid;
+  }, [isAdmin, selectedSalespersonNo, salespeople, currentUid]);
+
+  const ownerSalespersonNoForGroups = useMemo(() => {
+    // tie groups to the rep currently being viewed
+    return normalizeSalespersonNo(selectedSalespersonNo || salespersonNo || "");
+  }, [selectedSalespersonNo, salespersonNo]);
+
+  async function openGroupsForCustomer(c: Customer) {
+    setGroupFor(c);
+    setGroupModalOpen(true);
+    setGroupsError("");
+    setNewGroupName("");
+  }
+
+  function closeGroupsModal() {
+    setGroupModalOpen(false);
+    setGroupFor(null);
+    setGroups([]);
+    setGroupMembership({});
+    setGroupsError("");
+    setGroupSaving(false);
+    setNewGroupName("");
+  }
+
+  async function loadGroupsAndMembership(ownerUid: string, customerNo: string) {
+    const cust = String(customerNo || "").trim();
+    if (!ownerUid || !cust) return;
+
+    setGroupsLoading(true);
+    setGroupsError("");
+    try {
+      const groupsQ = query(
+        collection(db, "salesmanGroups"),
+        where("ownerUid", "==", ownerUid),
+        orderBy("name")
+      );
+
+      const snap = await getDocs(groupsQ);
+      const rows: SalesmanGroup[] = snap.docs.map((d) => {
+        const v = d.data() as any;
+        return {
+          id: d.id,
+          ownerUid: String(v.ownerUid ?? ""),
+          ownerSalespersonNo: String(v.ownerSalespersonNo ?? ""),
+          name: String(v.name ?? ""),
+          createdAt: v.createdAt ?? null,
+          updatedAt: v.updatedAt ?? null,
+        };
+      });
+
+      // For each group, check if this customer is already in it
+      const checks = await Promise.all(
+        rows.map(async (g) => {
+          try {
+            const mRef = doc(db, "salesmanGroups", g.id, "stores", cust);
+            const mSnap = await getDoc(mRef);
+            return [g.id, mSnap.exists()] as const;
+          } catch {
+            return [g.id, false] as const;
+          }
+        })
+      );
+
+      const membership: Record<string, boolean> = {};
+      for (const [gid, ok] of checks) membership[gid] = ok;
+
+      setGroups(rows);
+      setGroupMembership(membership);
+    } catch (e: any) {
+      console.error(e);
+      setGroups([]);
+      setGroupMembership({});
+      setGroupsError(
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to load groups")
+      );
+    } finally {
+      setGroupsLoading(false);
+    }
+  }
+
+  async function toggleCustomerInGroup(groupId: string, shouldBeInGroup: boolean) {
+    const cust = String(groupFor?.customerNo || "").trim();
+    if (!groupId || !cust) return;
+
+    setGroupSaving(true);
+    setGroupsError("");
+    try {
+      const mRef = doc(db, "salesmanGroups", groupId, "stores", cust);
+
+      if (shouldBeInGroup) {
+        await setDoc(
+          mRef,
+          {
+            customerNo: cust,
+            addedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } else {
+        await deleteDoc(mRef);
+      }
+
+      // optimistic update
+      setGroupMembership((prev) => ({ ...prev, [groupId]: shouldBeInGroup }));
+      // bump updatedAt on the group
+      await updateDoc(doc(db, "salesmanGroups", groupId), {
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    } catch (e: any) {
+      console.error(e);
+      setGroupsError(
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to update group")
+      );
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  async function createGroupAndAddStore() {
+    const name = newGroupName.trim();
+    const cust = String(groupFor?.customerNo || "").trim();
+    if (!name || !cust) return;
+    if (!ownerUidForGroups) {
+      setGroupsError("Missing owner UID. Please sign in again.");
+      return;
+    }
+
+    setGroupSaving(true);
+    setGroupsError("");
+
+    try {
+      const ref = await addDoc(collection(db, "salesmanGroups"), {
+        ownerUid: ownerUidForGroups,
+        ownerSalespersonNo: ownerSalespersonNoForGroups || null,
+        name,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      // Immediately add this store into the new group
+      await setDoc(
+        doc(db, "salesmanGroups", ref.id, "stores", cust),
+        {
+          customerNo: cust,
+          addedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // refresh list so it shows instantly + checked
+      setNewGroupName("");
+      await loadGroupsAndMembership(ownerUidForGroups, cust);
+
+      // refresh owner pills list too
+      await loadOwnerGroups(ownerUidForGroups);
+    } catch (e: any) {
+      console.error(e);
+      setGroupsError(
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to create group")
+      );
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  // when modal opens (or owner changes), load groups + membership
+  useEffect(() => {
+    if (!groupModalOpen) return;
+    const cust = String(groupFor?.customerNo || "").trim();
+    if (!cust) return;
+    if (!ownerUidForGroups) return;
+
+    loadGroupsAndMembership(ownerUidForGroups, cust);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupModalOpen, groupFor?.customerNo, ownerUidForGroups]);
+
+  async function loadOwnerGroups(ownerUid: string) {
+    if (!ownerUid) {
+      setOwnerGroups([]);
+      return;
+    }
+    setOwnerGroupsLoading(true);
+    setOwnerGroupsError("");
+    try {
+      const qg = query(
+        collection(db, "salesmanGroups"),
+        where("ownerUid", "==", ownerUid),
+        orderBy("name")
+      );
+      const snap = await getDocs(qg);
+      const rows: SalesmanGroup[] = snap.docs.map((d) => {
+        const v = d.data() as any;
+        return {
+          id: d.id,
+          ownerUid: String(v.ownerUid ?? ""),
+          ownerSalespersonNo: String(v.ownerSalespersonNo ?? ""),
+          name: String(v.name ?? ""),
+          createdAt: v.createdAt ?? null,
+          updatedAt: v.updatedAt ?? null,
+        };
+      });
+      setOwnerGroups(rows);
+    } catch (e: any) {
+      console.error(e);
+      setOwnerGroups([]);
+      setOwnerGroupsError(
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to load groups")
+      );
+    } finally {
+      setOwnerGroupsLoading(false);
+    }
+  }
+
+  // Load pills list whenever the owner changes (rep switch, sign-in, etc.)
+  useEffect(() => {
+    setActiveGroupId("");
+    setGroupCustomerSet(null);
+    setGroupFilterError("");
+    setGroupFilterLoading(false);
+
+    if (!ownerUidForGroups) {
+      setOwnerGroups([]);
+      setOwnerGroupsLoading(false);
+      setOwnerGroupsError("");
+      return;
+    }
+
+    loadOwnerGroups(ownerUidForGroups);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerUidForGroups]);
+
+  // When a group pill is selected, load customerNos in that group
+  useEffect(() => {
+    if (!activeGroupId) {
+      setGroupCustomerSet(null);
+      setGroupFilterError("");
+      setGroupFilterLoading(false);
+      return;
+    }
+
+    (async () => {
+      setGroupFilterLoading(true);
+      setGroupFilterError("");
+      try {
+        const storesRef = collection(db, "salesmanGroups", activeGroupId, "stores");
+        const snap = await getDocs(storesRef);
+
+        const set = new Set<string>();
+        snap.docs.forEach((d) => {
+          const id = String(d.id || "").trim();
+          if (id) set.add(id);
+          const v = d.data() as any;
+          const cn = String(v?.customerNo ?? "").trim();
+          if (cn) set.add(cn);
+        });
+
+        setGroupCustomerSet(set);
+      } catch (e: any) {
+        console.error(e);
+        setGroupCustomerSet(new Set());
+        setGroupFilterError(
+          e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to load group")
+        );
+      } finally {
+        setGroupFilterLoading(false);
+      }
+    })();
+  }, [activeGroupId]);
 
   const ITEM_BUTTONS: { label: string; code: string }[] = [
     { label: "2025 Mothers Day", code: "K573" },
@@ -347,9 +662,80 @@ export default function CustomersPage() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteText, setEditingNoteText] = useState<string>("");
   const [editingNoteFollowUp, setEditingNoteFollowUp] = useState<string>("");
-  const [notesCountByCustomerNo, setNotesCountByCustomerNo] = useState<Record<string, number>>(
-    {}
-  );
+  const [notesCountByCustomerNo, setNotesCountByCustomerNo] = useState<Record<string, number>>({});
+
+  // ✅ Group note UI state
+  const [isGroupNote, setIsGroupNote] = useState<boolean>(false);
+  const [noteGroupsLoading, setNoteGroupsLoading] = useState<boolean>(false);
+  const [noteGroupsError, setNoteGroupsError] = useState<string>("");
+  const [noteGroupsForCustomer, setNoteGroupsForCustomer] = useState<SalesmanGroup[]>([]);
+  const [groupNoteGroupId, setGroupNoteGroupId] = useState<string>("");
+
+  async function loadGroupsForNoteCustomer(ownerUid: string, customerNo: string) {
+    const cust = String(customerNo || "").trim();
+    if (!ownerUid || !cust) {
+      setNoteGroupsForCustomer([]);
+      setGroupNoteGroupId("");
+      setNoteGroupsError("");
+      setNoteGroupsLoading(false);
+      return;
+    }
+
+    setNoteGroupsLoading(true);
+    setNoteGroupsError("");
+    try {
+      const groupsQ = query(
+        collection(db, "salesmanGroups"),
+        where("ownerUid", "==", ownerUid),
+        orderBy("name")
+      );
+      const snap = await getDocs(groupsQ);
+
+      const all: SalesmanGroup[] = snap.docs.map((d) => {
+        const v = d.data() as any;
+        return {
+          id: d.id,
+          ownerUid: String(v.ownerUid ?? ""),
+          ownerSalespersonNo: String(v.ownerSalespersonNo ?? ""),
+          name: String(v.name ?? ""),
+          createdAt: v.createdAt ?? null,
+          updatedAt: v.updatedAt ?? null,
+        };
+      });
+
+      const checks = await Promise.all(
+        all.map(async (g) => {
+          try {
+            const mRef = doc(db, "salesmanGroups", g.id, "stores", cust);
+            const mSnap = await getDoc(mRef);
+            return [g, mSnap.exists()] as const;
+          } catch {
+            return [g, false] as const;
+          }
+        })
+      );
+
+      const inGroups = checks.filter(([, ok]) => ok).map(([g]) => g);
+
+      setNoteGroupsForCustomer(inGroups);
+
+      // Auto-select when there's exactly 1 group
+      if (inGroups.length === 1) {
+        setGroupNoteGroupId(inGroups[0].id);
+      } else {
+        setGroupNoteGroupId("");
+      }
+    } catch (e: any) {
+      console.error(e);
+      setNoteGroupsForCustomer([]);
+      setGroupNoteGroupId("");
+      setNoteGroupsError(
+        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Failed to load groups")
+      );
+    } finally {
+      setNoteGroupsLoading(false);
+    }
+  }
 
   async function refreshNotesCount(customerNo: string) {
     const key = String(customerNo || "").trim();
@@ -406,12 +792,20 @@ export default function CustomersPage() {
     setEditingNoteId(null);
     setEditingNoteText("");
     setEditingNoteFollowUp("");
+
+    // ✅ reset group-note UI and load groups for this customer
+    setIsGroupNote(false);
+    setNoteGroupsError("");
+    setNoteGroupsForCustomer([]);
+    setGroupNoteGroupId("");
+    if (ownerUidForGroups && c?.customerNo) {
+      loadGroupsForNoteCustomer(ownerUidForGroups, c.customerNo);
+    }
   }
 
   const searchTimer = useRef<any>(null);
   const itemSuggestTimer = useRef<any>(null);
   const itemSuggestSeq = useRef<number>(0);
-
 
   // Notes realtime subscription (customers/{customerNo}/notes)
   useEffect(() => {
@@ -462,30 +856,121 @@ export default function CustomersPage() {
       return;
     }
 
+    const sourceCustomerNo = String(notesFor.customerNo || "").trim();
+    if (!sourceCustomerNo) return;
+
     setNotesSaving(true);
     try {
-      const notesRef = collection(db, "customers", notesFor.customerNo, "notes");
+      const followUpPart = newNoteFollowUp.trim()
+        ? { followUpDate: new Date(`${newNoteFollowUp}T00:00:00`) }
+        : {};
+
+      // ✅ GROUP NOTE PATH
+      if (isGroupNote) {
+        const gid = String(groupNoteGroupId || "").trim();
+        if (!gid) {
+          alert("Please choose a group for this group note.");
+          return;
+        }
+
+        // Pull all stores in this group
+        const storesSnap = await getDocs(collection(db, "salesmanGroups", gid, "stores"));
+        const targets = new Set<string>();
+        storesSnap.docs.forEach((d) => {
+          const id = String(d.id || "").trim();
+          if (id) targets.add(id);
+          const v = d.data() as any;
+          const cn = String(v?.customerNo ?? "").trim();
+          if (cn) targets.add(cn);
+        });
+
+        // Ensure source customer is included (in case membership doc is missing for some reason)
+        targets.add(sourceCustomerNo);
+
+        const targetList = Array.from(targets).filter(Boolean);
+        if (targetList.length === 0) {
+          alert("No accounts found in this group.");
+          return;
+        }
+
+        // Stable identifier shared across all copies
+        const groupNoteId = `${Date.now()}_${user.uid}_${Math.random().toString(36).slice(2, 10)}`;
+
+        const baseData: any = {
+          text,
+          pinned: false,
+          ...followUpPart,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdByUid: user.uid,
+          createdByName: user.displayName || user.email || "",
+          updatedByUid: user.uid,
+
+          // metadata
+          isGroupNote: true,
+          groupId: gid,
+          groupNoteId,
+          sourceCustomerNo,
+        };
+
+        // Firestore batch limit = 500 writes; use a safer chunk size
+        const CHUNK = 450;
+        for (let i = 0; i < targetList.length; i += CHUNK) {
+          const slice = targetList.slice(i, i + CHUNK);
+          const batch = writeBatch(db);
+
+          slice.forEach((custNo) => {
+            const noteRef = doc(collection(db, "customers", custNo, "notes"));
+            batch.set(noteRef, baseData);
+          });
+
+          await batch.commit();
+        }
+
+        // Optimistic count bump for any customers currently tracked
+        setNotesCountByCustomerNo((prev) => {
+          const next = { ...prev };
+          for (const custNo of targetList) {
+            if (custNo in next || custNo === sourceCustomerNo) {
+              next[custNo] = Math.max(1, (next[custNo] || 0) + 1);
+            }
+          }
+          return next;
+        });
+
+        refreshNotesCount(sourceCustomerNo);
+
+        setNewNoteText("");
+        setNewNoteFollowUp("");
+        return;
+      }
+
+      // ✅ SINGLE NOTE PATH (existing behavior)
+      const notesRef = collection(db, "customers", sourceCustomerNo, "notes");
       await addDoc(notesRef, {
         text,
         pinned: false,
-        ...(newNoteFollowUp.trim()
-          ? { followUpDate: new Date(`${newNoteFollowUp}T00:00:00`) }
-          : {}),
+        ...followUpPart,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         createdByUid: user.uid,
         createdByName: user.displayName || user.email || "",
         updatedByUid: user.uid,
+
+        isGroupNote: false,
+        groupId: null,
+        groupNoteId: null,
+        sourceCustomerNo,
       });
 
       // Make Notes pill go green immediately
       setNotesCountByCustomerNo((prev) => {
-        const key = String(notesFor.customerNo || "").trim();
+        const key = String(sourceCustomerNo || "").trim();
         if (!key) return prev;
         const nextCount = Math.max(1, (prev[key] || 0) + 1);
         return { ...prev, [key]: nextCount };
       });
-      refreshNotesCount(notesFor.customerNo);
+      refreshNotesCount(sourceCustomerNo);
 
       setNewNoteText("");
       setNewNoteFollowUp("");
@@ -625,7 +1110,7 @@ export default function CustomersPage() {
         udf250TotalSales: v.udf250TotalSales ?? v.udf250Totalsales ?? "",
         buyerEmail: v.buyerEmail ?? "",
         buyer2Email: v.buyer2Email ?? "",
-email: v.email ?? "",
+        email: v.email ?? "",
       };
     });
   }
@@ -811,8 +1296,9 @@ email: v.email ?? "",
     return Array.from(out);
   }
 
-
-  async function fetchItemSuggestions(termRaw: string): Promise<Array<{ code: string; desc: string }>> {
+  async function fetchItemSuggestions(
+    termRaw: string
+  ): Promise<Array<{ code: string; desc: string }>> {
     const raw = String(termRaw || "").trim();
     if (!raw) return [];
 
@@ -939,11 +1425,13 @@ email: v.email ?? "",
       if (!user) {
         setUserEmail("");
         setSalespersonNo("");
+        setCurrentUid("");
         setLoading(false);
         return;
       }
 
       setUserEmail(user.email ?? "");
+      setCurrentUid(user.uid);
 
       try {
         const userSnap = await getDoc(doc(db, "users", user.uid));
@@ -1066,6 +1554,8 @@ email: v.email ?? "",
       setActivityBucket("");
       setStatusFilter("");
       setStateFilter("");
+
+      // don’t force-clear group filter here
       return;
     }
 
@@ -1227,6 +1717,13 @@ email: v.email ?? "",
       if (statusFilter && String(c.status ?? "") !== statusFilter) return false;
       if (stateFilter && String(c.stateUpper ?? "") !== stateFilter) return false;
 
+      // ✅ Group filter
+      if (activeGroupId) {
+        if (!groupCustomerSet) return false; // while loading, show nothing (keeps it honest)
+        const has = groupCustomerSet.has(String(c.customerNo ?? "").trim());
+        if (!has) return false;
+      }
+
       if (activeItemCodes.length) {
         if (!itemCustomerSet) return false;
         const has = itemCustomerSet.has(String(c.customerNo ?? "").trim());
@@ -1260,6 +1757,8 @@ email: v.email ?? "",
     activeItemCodes,
     itemCustomerSet,
     invertItemFilter,
+    activeGroupId,
+    groupCustomerSet,
   ]);
 
   const stateOptions = useMemo(() => {
@@ -1587,7 +2086,9 @@ email: v.email ?? "",
                   <span className="ml-2 font-semibold text-gray-900">
                     {activeItemDisplay || activeItemCodes[0]}
                     {activeItemCodes.length > 1 ? (
-                      <span className="ml-2 text-gray-500 font-normal">({activeItemCodes.length} items)</span>
+                      <span className="ml-2 text-gray-500 font-normal">
+                        ({activeItemCodes.length} items)
+                      </span>
                     ) : null}
                   </span>
                 ) : (
@@ -1600,15 +2101,16 @@ email: v.email ?? "",
                 {ITEM_BUTTONS.map((b) => {
                   const code = normalizeItemCode(b.code);
                   const active =
-                    !!code && activeItemCodes.length === 1 && activeItemCodes[0] === code && !invertItemFilter;
+                    !!code &&
+                    activeItemCodes.length === 1 &&
+                    activeItemCodes[0] === code &&
+                    !invertItemFilter;
                   return (
                     <button
                       key={b.label}
                       type="button"
                       className={`px-3 py-1 rounded-full border text-xs ${
-                        active
-                          ? "bg-gray-900 text-white border-gray-900"
-                          : "bg-white hover:bg-gray-50"
+                        active ? "bg-gray-900 text-white border-gray-900" : "bg-white hover:bg-gray-50"
                       } ${!code ? "opacity-40 cursor-not-allowed" : ""}`}
                       onClick={() => {
                         if (!code) return;
@@ -1649,7 +2151,6 @@ email: v.email ?? "",
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                
                 <div className="relative w-full max-w-[240px]">
                   <input
                     className="w-full border rounded px-3 py-2 text-sm"
@@ -1736,7 +2237,8 @@ email: v.email ?? "",
                         </div>
                       ) : (
                         <div className="p-2 text-xs text-gray-500">
-                          No matches{(itemInput || "").trim().length < 2 && !looksLikeItemCode(itemInput)
+                          No matches
+                          {(itemInput || "").trim().length < 2 && !looksLikeItemCode(itemInput)
                             ? " (keep typing)"
                             : ""}
                         </div>
@@ -1778,6 +2280,68 @@ email: v.email ?? "",
                 >
                   Apply
                 </button>
+              </div>
+
+              {/* ✅ Group filter pills (below item code box) */}
+              <div className="mt-2">
+                <div className="text-xs text-gray-600 mb-2 flex items-center gap-2">
+                  <span>Groups:</span>
+                  {ownerGroupsLoading ? <span className="text-gray-500">Loading…</span> : null}
+                  {groupFilterLoading ? <span className="text-gray-500">Loading group…</span> : null}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className={`px-3 py-1 rounded-full border text-xs ${
+                      !activeGroupId
+                        ? "bg-gray-900 text-white border-gray-900"
+                        : "bg-white hover:bg-gray-50"
+                    }`}
+                    onClick={() => {
+                      setActiveGroupId("");
+                      setVisibleCount(PAGE_SIZE);
+                    }}
+                    title="Show all customers (no group filter)"
+                  >
+                    All Groups
+                  </button>
+
+                  {ownerGroups.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className={`px-3 py-1 rounded-full border text-xs ${
+                        activeGroupId === g.id
+                          ? "bg-gray-900 text-white border-gray-900"
+                          : "bg-white hover:bg-gray-50"
+                      }`}
+                      onClick={() => {
+                        setActiveGroupId(g.id);
+                        setVisibleCount(PAGE_SIZE);
+                      }}
+                      title={`Group: ${g.name}`}
+                    >
+                      {g.name}
+                    </button>
+                  ))}
+
+                  {!ownerGroupsLoading && ownerGroups.length === 0 ? (
+                    <span className="text-xs text-gray-500">No groups yet.</span>
+                  ) : null}
+                </div>
+
+                {ownerGroupsError ? (
+                  <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                    {ownerGroupsError}
+                  </div>
+                ) : null}
+
+                {groupFilterError ? (
+                  <div className="mt-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                    {groupFilterError}
+                  </div>
+                ) : null}
               </div>
 
               {/* Admin-only: Salesman filter pills */}
@@ -1947,32 +2511,39 @@ email: v.email ?? "",
                               {String(c.status ?? "").toUpperCase() === "I" ? "Inactive" : "Active"}
                             </span>
 
-	                            {(() => {
-	                              const raw = [
-	                                (c as any).buyerEmail,
-	                                (c as any).buyer2Email,
-	                              ]
-	                                .map((v) => String(v ?? "").trim())
-	                                .filter(Boolean);
-	                              if (!raw.length) return null;
-	                              const seen = new Set<string>();
-	                              const emails = raw.filter((e) => {
-	                                const k = e.toLowerCase();
-	                                if (seen.has(k)) return false;
-	                                seen.add(k);
-	                                return true;
-	                              });
-	                              const to = emails.join(",");
-	                              return (
-	                                <a
-	                                  href={`mailto:${to}`}
-	                                  className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
-	                                  title={to}
-	                                >
-	                                  Email Buyer
-	                                </a>
-	                              );
-	                            })()}
+                            {(() => {
+                              const raw = [(c as any).buyerEmail, (c as any).buyer2Email]
+                                .map((v) => String(v ?? "").trim())
+                                .filter(Boolean);
+                              if (!raw.length) return null;
+                              const seen = new Set<string>();
+                              const emails = raw.filter((e) => {
+                                const k = e.toLowerCase();
+                                if (seen.has(k)) return false;
+                                seen.add(k);
+                                return true;
+                              });
+                              const to = emails.join(",");
+                              return (
+                                <a
+                                  href={`mailto:${to}`}
+                                  className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
+                                  title={to}
+                                >
+                                  Email Buyer
+                                </a>
+                              );
+                            })()}
+
+                            {/* ✅ Groups */}
+                            <button
+                              type="button"
+                              onClick={() => openGroupsForCustomer(c)}
+                              className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
+                              title="Add to group"
+                            >
+                              + Group
+                            </button>
 
                             <button
                               type="button"
@@ -1984,9 +2555,7 @@ email: v.email ?? "",
                             </button>
 
                             <a
-                              href={`/customers/${encodeURIComponent(
-                                String(c.customerNo ?? "").trim()
-                              )}/invoices`}
+                              href={`/customers/${encodeURIComponent(String(c.customerNo ?? "").trim())}/invoices`}
                               className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
                               title="View invoices"
                             >
@@ -1997,8 +2566,7 @@ email: v.email ?? "",
                               type="button"
                               onClick={() => openNotes(c)}
                               className={`px-1.5 py-0.5 rounded border text-[10px] ${
-                                (notesCountByCustomerNo[String(c.customerNo ?? "").trim()] || 0) >
-                                0
+                                (notesCountByCustomerNo[String(c.customerNo ?? "").trim()] || 0) > 0
                                   ? "bg-green-100 border-green-400 text-green-900"
                                   : "bg-white text-gray-700 hover:bg-gray-50"
                               }`}
@@ -2014,7 +2582,9 @@ email: v.email ?? "",
                             ) : null}
 
                             {c.dateLastActivity ? (
-                              <span className="text-[10px] text-gray-500">Last: {c.dateLastActivity}</span>
+                              <span className="text-[10px] text-gray-500">
+                                Last: {c.dateLastActivity}
+                              </span>
                             ) : null}
                           </div>
                         </div>
@@ -2048,6 +2618,118 @@ email: v.email ?? "",
           </div>
         )}
       </div>
+
+      {/* ✅ Groups Modal */}
+      {groupModalOpen ? (
+        <div className="fixed inset-0 z-50">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/30"
+            aria-label="Close groups"
+            onClick={closeGroupsModal}
+          />
+          <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 bg-white shadow-xl border rounded-lg overflow-hidden">
+            <div className="p-3 border-b flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold leading-5 truncate">
+                  Groups{groupFor ? ` • ${groupFor.customerName}` : ""}
+                </div>
+                {groupFor ? (
+                  <div className="text-xs text-gray-500 truncate">{groupFor.customerNo}</div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="px-2 py-1 rounded border bg-white hover:bg-gray-50 text-sm"
+                onClick={closeGroupsModal}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 space-y-3">
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-gray-700">Create new group</div>
+                <div className="flex gap-2">
+                  <input
+                    className="flex-1 border rounded px-2 py-2 text-sm"
+                    placeholder="Group name (e.g., Top 25, Needs Call)"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") createGroupAndAddStore();
+                    }}
+                    disabled={groupSaving}
+                  />
+                  <button
+                    type="button"
+                    className={`px-3 py-2 rounded text-sm text-white ${
+                      groupSaving || !newGroupName.trim()
+                        ? "bg-gray-400 cursor-not-allowed"
+                        : "bg-gray-900 hover:bg-gray-800"
+                    }`}
+                    disabled={groupSaving || !newGroupName.trim()}
+                    onClick={createGroupAndAddStore}
+                  >
+                    Create
+                  </button>
+                </div>
+                <div className="text-[11px] text-gray-500">
+                  Groups are private to the rep that created them.
+                </div>
+              </div>
+
+              <div className="border-t pt-3">
+                <div className="text-xs font-semibold text-gray-700 mb-2">
+                  Add / remove from groups
+                </div>
+
+                {groupsLoading ? (
+                  <div className="text-sm text-gray-600">Loading…</div>
+                ) : groupsError ? (
+                  <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                    {groupsError}
+                  </div>
+                ) : groups.length === 0 ? (
+                  <div className="text-sm text-gray-600">No groups yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {groups.map((g) => {
+                      const checked = Boolean(groupMembership[g.id]);
+                      return (
+                        <label
+                          key={g.id}
+                          className="flex items-center justify-between gap-3 rounded border p-2 hover:bg-gray-50"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">{g.name}</div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={groupSaving}
+                            onChange={(e) => toggleCustomerInGroup(g.id, e.target.checked)}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 border-t bg-gray-50 flex justify-end">
+              <button
+                type="button"
+                className="px-3 py-2 rounded border bg-white hover:bg-gray-50 text-sm"
+                onClick={closeGroupsModal}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Call Prep Drawer */}
       {callPrepOpen ? (
@@ -2126,7 +2808,9 @@ email: v.email ?? "",
                             <span className="min-w-0">
                               <span className="font-mono">{it.itemCode}</span>
                               {it.itemCodeDesc ? (
-                                <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
+                                <span className="ml-2 text-gray-600 truncate">
+                                  — {it.itemCodeDesc}
+                                </span>
                               ) : null}
                             </span>
                             <span className="tabular-nums text-gray-700">{it.qty}</span>
@@ -2152,7 +2836,9 @@ email: v.email ?? "",
                             <span className="min-w-0">
                               <span className="font-mono">{it.itemCode}</span>
                               {it.itemCodeDesc ? (
-                                <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
+                                <span className="ml-2 text-gray-600 truncate">
+                                  — {it.itemCodeDesc}
+                                </span>
                               ) : null}
                             </span>
                             <span className="tabular-nums text-gray-700">{it.qty}</span>
@@ -2163,34 +2849,6 @@ email: v.email ?? "",
                       <div className="text-sm text-gray-500">None detected.</div>
                     )}
                   </div>
-
-                  {/* Pitch Next hidden */}
-                  {false ? (
-                    <div>
-                      <div className="font-medium text-sm mb-2">Pitch Next</div>
-                      {callPrepData?.itemIntel?.pitchNext?.length ? (
-                        <ul className="space-y-1">
-                          {callPrepData?.itemIntel?.pitchNext?.map((it: any) => (
-                            <li
-                              key={`pitch-${it.itemCode}-${it.reason}`}
-                              className="flex items-baseline justify-between gap-3 text-sm"
-                            >
-                              <span className="min-w-0">
-                                <span className="font-mono">{it.itemCode}</span>
-                                {it.itemCodeDesc ? (
-                                  <span className="ml-2 text-gray-600 truncate">— {it.itemCodeDesc}</span>
-                                ) : null}
-                                <div className="text-[11px] text-blue-600">{it.reason}</div>
-                              </span>
-                              <span className="tabular-nums text-gray-700">{it.qty}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="text-sm text-gray-500">No pitch suggestions.</div>
-                      )}
-                    </div>
-                  ) : null}
 
                   <div className="text-xs text-gray-500">
                     Scanned {callPrepData.itemIntel.invoicesScannedForItems} invoices •{" "}
@@ -2251,13 +2909,77 @@ email: v.email ?? "",
                   onChange={(e) => setNewNoteFollowUp(e.target.value)}
                 />
               </div>
+
+              {/* ✅ Group note controls */}
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-xs text-gray-700 select-none">
+                  <input
+                    type="checkbox"
+                    checked={isGroupNote}
+                    disabled={notesSaving}
+                    onChange={(e) => setIsGroupNote(e.target.checked)}
+                  />
+                  Group note
+                </label>
+
+                {noteGroupsLoading ? (
+                  <div className="text-xs text-gray-500">Loading groups…</div>
+                ) : null}
+              </div>
+
+              {isGroupNote ? (
+                <div className="space-y-2">
+                  {noteGroupsError ? (
+                    <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+                      {noteGroupsError}
+                    </div>
+                  ) : null}
+
+                  {noteGroupsForCustomer.length === 0 && !noteGroupsLoading ? (
+                    <div className="text-xs text-gray-500">
+                      This account is not in any groups.
+                    </div>
+                  ) : noteGroupsForCustomer.length > 1 ? (
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs text-gray-600">Apply to group</div>
+                      <select
+                        className="border rounded px-2 py-1 text-sm"
+                        value={groupNoteGroupId}
+                        onChange={(e) => setGroupNoteGroupId(e.target.value)}
+                        disabled={notesSaving}
+                      >
+                        <option value="">Select…</option>
+                        {noteGroupsForCustomer.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : noteGroupsForCustomer.length === 1 ? (
+                    <div className="text-xs text-gray-600">
+                      Applying to:{" "}
+                      <span className="font-semibold text-gray-900">
+                        {noteGroupsForCustomer[0].name}
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="flex justify-end">
                 <button
                   type="button"
                   onClick={addNote}
-                  disabled={notesSaving || !newNoteText.trim()}
+                  disabled={
+                    notesSaving ||
+                    !newNoteText.trim() ||
+                    (isGroupNote && (!groupNoteGroupId || noteGroupsForCustomer.length === 0))
+                  }
                   className={`px-3 py-2 rounded text-sm text-white ${
-                    notesSaving || !newNoteText.trim()
+                    notesSaving ||
+                    !newNoteText.trim() ||
+                    (isGroupNote && (!groupNoteGroupId || noteGroupsForCustomer.length === 0))
                       ? "bg-gray-400 cursor-not-allowed"
                       : "bg-gray-900 hover:bg-gray-800"
                   }`}
@@ -2289,6 +3011,9 @@ email: v.email ?? "",
                             {n.createdByName ? ` • ${n.createdByName}` : ""}
                             {n.updatedAt ? ` • Updated ${fmtTs(n.updatedAt)}` : ""}
                             {pinned ? <span className="ml-2 text-gray-900">• PINNED</span> : null}
+                            {(n as any).isGroupNote ? (
+                              <span className="ml-2 text-gray-900">• GROUP</span>
+                            ) : null}
                           </div>
                           {(n as any).followUpDate ? (
                             <div className="text-[11px] text-gray-700 mt-0.5">
@@ -2304,16 +3029,18 @@ email: v.email ?? "",
                           <div className="flex gap-2 items-center">
                             {/* ⭐ Pin */}
                             <button
-  type="button"
-  className={`px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs ${
-    pinned ? "text-yellow-500 border-yellow-400" : "text-gray-700 border-gray-300"
-  }`}
-  onClick={() => togglePinNote(n)}
-  title={pinned ? "Unpin note" : "Pin note"}
-  disabled={notesSaving}
->
-  {pinned ? "★" : "☆"}
-</button>
+                              type="button"
+                              className={`px-2 py-1 rounded border bg-white hover:bg-gray-50 text-xs ${
+                                pinned
+                                  ? "text-yellow-500 border-yellow-400"
+                                  : "text-gray-700 border-gray-300"
+                              }`}
+                              onClick={() => togglePinNote(n)}
+                              title={pinned ? "Unpin note" : "Pin note"}
+                              disabled={notesSaving}
+                            >
+                              {pinned ? "★" : "☆"}
+                            </button>
 
                             <button
                               type="button"
