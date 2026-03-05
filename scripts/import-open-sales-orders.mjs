@@ -23,7 +23,7 @@ import admin from "firebase-admin";
 
 const SERVICE_ACCOUNT_PATH =
   process.env.SERVICE_ACCOUNT_PATH || "C:\\SageExports\\serviceAccountKey.json";
-const CSV_PATH = process.env.CSV_PATH || "C:\\SageExports\\SO_Open.csv";
+const CSV_PATH = process.env.CSV_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\SO_Open.csv";
 
 const LINES_COLLECTION = process.env.LINES_COLLECTION || "openSalesOrderLines";
 const STATS_COLLECTION = process.env.STATS_COLLECTION || "openSalesOrderStats";

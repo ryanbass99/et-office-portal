@@ -3,7 +3,7 @@ import admin from "firebase-admin";
 import Papa from "papaparse";
 
 const SERVICE_ACCOUNT_PATH = "C:\\sageexports\\serviceAccountKey.json";
-const CSV_PATH = "C:\\sageexports\\customers.csv";
+const CSV_PATH = "\\\\ets02\\ETS02_SAGE\\SageExports\\customers.csv";
 
 function cleanStr(v) {
   if (v === null || v === undefined) return "";

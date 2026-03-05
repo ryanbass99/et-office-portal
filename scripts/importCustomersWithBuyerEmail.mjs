@@ -4,8 +4,8 @@ import Papa from "papaparse";
 
 // ---- PATHS (edit these) ----
 const SERVICE_ACCOUNT_PATH = "C:\\sageexports\\serviceAccountKey.json";
-const CUSTOMERS_CSV_PATH = "C:\\sageexports\\customers.csv";
-const CONTACTS_CSV_PATH = "C:\\sageexports\\customer_contacts.csv";
+const CUSTOMERS_CSV_PATH = "\\\\ets02\\ETS02_SAGE\\SageExports\\customers.csv";
+const CONTACTS_CSV_PATH  = "\\\\ets02\\ETS02_SAGE\\SageExports\\customer_contacts.csv";
 
 // ---- CONFIG ----
 // Contact codes we consider "buyer".

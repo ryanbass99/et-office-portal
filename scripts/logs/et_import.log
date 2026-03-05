@@ -1,0 +1,318 @@
+=============================== 
+ET Imports started: Wed 03/04/2026 15:26:39.46 
+=============================== 
+ 
+---- Running import-customers.mjs ---- 
+CSV parse warnings/errors (showing up to 10):
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+{
+  type: 'Quotes',
+  code: 'InvalidQuotes',
+  message: 'Trailing quote on quoted field is malformed',
+  row: 11399,
+  index: 1322354
+}
+Loaded 31862 customer rows from CSV.
+Committing... total queued so far: 100
+Committed 100 so far ✅
+Committing... total queued so far: 200
+Committed 200 so far ✅
+Committing... total queued so far: 300
+Committed 300 so far ✅
+Committing... total queued so far: 400
+Committed 400 so far ✅
+Committing... total queued so far: 500
+Committed 500 so far ✅
+Committing... total queued so far: 600
+Committed 600 so far ✅
+Committing... total queued so far: 700
+Committed 700 so far ✅
+Committing... total queued so far: 800
+Committed 800 so far ✅
+Committing... total queued so far: 900
+Committed 900 so far ✅
+Committing... total queued so far: 1000
+Committed 1000 so far ✅
+Committing... total queued so far: 1100
+Committed 1100 so far ✅
+Committing... total queued so far: 1200
+Committed 1200 so far ✅
+Committing... total queued so far: 1300
+Committed 1300 so far ✅
+Committing... total queued so far: 1400
+Committed 1400 so far ✅
+Committing... total queued so far: 1500
+Committed 1500 so far ✅
+Committing... total queued so far: 1600
+Committed 1600 so far ✅
+Committing... total queued so far: 1700
+Committed 1700 so far ✅
+Committing... total queued so far: 1800
+Committed 1800 so far ✅
+Committing... total queued so far: 1900
+Committed 1900 so far ✅
+Committing... total queued so far: 2000
+Committed 2000 so far ✅
+Committing... total queued so far: 2100
+Committed 2100 so far ✅
+Committing... total queued so far: 2200
+Committed 2200 so far ✅
+Committing... total queued so far: 2300
+Committed 2300 so far ✅
+Committing... total queued so far: 2400
+Committed 2400 so far ✅
+Committing... total queued so far: 2500
+Committed 2500 so far ✅
+Committing... total queued so far: 2600
+Committed 2600 so far ✅
+Committing... total queued so far: 2700
+Committed 2700 so far ✅
+Committing... total queued so far: 2800
+Committed 2800 so far ✅
+Committing... total queued so far: 2900
+Committed 2900 so far ✅
+Committing... total queued so far: 3000
+Committed 3000 so far ✅
+Committing... total queued so far: 3100
+Committed 3100 so far ✅
+Committing... total queued so far: 3200
+Committed 3200 so far ✅
+Committing... total queued so far: 3300
+Committed 3300 so far ✅
+Committing... total queued so far: 3400
+Committed 3400 so far ✅
+Committing... total queued so far: 3500
+Committed 3500 so far ✅
+Committing... total queued so far: 3600
+Committed 3600 so far ✅
+Committing... total queued so far: 3700
+Committed 3700 so far ✅
+Committing... total queued so far: 3800
+Committed 3800 so far ✅
+Committing... total queued so far: 3900
+Committed 3900 so far ✅
+Committing... total queued so far: 4000
+Committed 4000 so far ✅
+Committing... total queued so far: 4100
+Committed 4100 so far ✅
+Committing... total queued so far: 4200
+Committed 4200 so far ✅
+Committing... total queued so far: 4300
+Committed 4300 so far ✅
+Committing... total queued so far: 4400
+Committed 4400 so far ✅
+Committing... total queued so far: 4500
+Committed 4500 so far ✅
+Committing... total queued so far: 4600
+Committed 4600 so far ✅
+Committing... total queued so far: 4700
+Committed 4700 so far ✅
+Committing... total queued so far: 4800
+Committed 4800 so far ✅
+Committing... total queued so far: 4900
+Committed 4900 so far ✅
+Committing... total queued so far: 5000
+Committed 5000 so far ✅
+Committing... total queued so far: 5100
+Committed 5100 so far ✅
+Committing... total queued so far: 5200
+Committed 5200 so far ✅
+Committing... total queued so far: 5300
+Committed 5300 so far ✅
+Committing... total queued so far: 5400
+Committed 5400 so far ✅
+Committing... total queued so far: 5500
+Committed 5500 so far ✅
+Committing... total queued so far: 5600
+Committed 5600 so far ✅
+Committing... total queued so far: 5700
+Committed 5700 so far ✅
+Committing... total queued so far: 5800
+Committed 5800 so far ✅
+Committing... total queued so far: 5900
+Committed 5900 so far ✅
+Committing... total queued so far: 6000
+Committed 6000 so far ✅
+Committing... total queued so far: 6100
+Committed 6100 so far ✅
+Committing... total queued so far: 6200
+Committed 6200 so far ✅
+Committing... total queued so far: 6300
+Committed 6300 so far ✅
+Committing... total queued so far: 6400
+Committed 6400 so far ✅
+Committing... total queued so far: 6500
+Committed 6500 so far ✅
+Committing... total queued so far: 6600
+Committed 6600 so far ✅
+Committing... total queued so far: 6700
+Committed 6700 so far ✅
+Committing... total queued so far: 6800
+Committed 6800 so far ✅
+Committing... total queued so far: 6900
+Committed 6900 so far ✅
+Committing... total queued so far: 7000
+Committed 7000 so far ✅
+Committing... total queued so far: 7100
+Committed 7100 so far ✅
+Committing... total queued so far: 7200
+Committed 7200 so far ✅
+Committing... total queued so far: 7300
+Committed 7300 so far ✅
+Committing... total queued so far: 7400
+Committed 7400 so far ✅
+Committing... total queued so far: 7500
+Committed 7500 so far ✅
+Committing... total queued so far: 7600
+Committed 7600 so far ✅
+Committing... total queued so far: 7700
+Committed 7700 so far ✅
+Committing... total queued so far: 7800
+Committed 7800 so far ✅
+Committing... total queued so far: 7900
+Committed 7900 so far ✅
+Committing... total queued so far: 8000
+Committed 8000 so far ✅
+Committing... total queued so far: 8100
+Committed 8100 so far ✅
+Committing... total queued so far: 8200
+Committed 8200 so far ✅
+Committing... total queued so far: 8300
+Committed 8300 so far ✅
+Committing... total queued so far: 8400
+Committed 8400 so far ✅
+Committing... total queued so far: 8500
+Committed 8500 so far ✅
+Committing... total queued so far: 8600
+Committed 8600 so far ✅
+Committing... total queued so far: 8700
+Committed 8700 so far ✅
+Committing... total queued so far: 8800
+Committed 8800 so far ✅
+Committing... total queued so far: 8900
+Committed 8900 so far ✅
+Committing... total queued so far: 9000
+Committed 9000 so far ✅
+Committing... total queued so far: 9100
+Committed 9100 so far ✅
+Committing... total queued so far: 9200
+Committed 9200 so far ✅
+Committing... total queued so far: 9300
+Committed 9300 so far ✅
+Committing... total queued so far: 9400
+Committed 9400 so far ✅
+Committing... total queued so far: 9500
+Committed 9500 so far ✅
+Committing... total queued so far: 9600
+Committed 9600 so far ✅
+Committing... total queued so far: 9700
+Committed 9700 so far ✅
+Committing... total queued so far: 9800
+Committed 9800 so far ✅
+Committing... total queued so far: 9900
+Committed 9900 so far ✅
+Committing... total queued so far: 10000
+Committed 10000 so far ✅
+Committing... total queued so far: 10100
+Committed 10100 so far ✅
+Committing... total queued so far: 10200
+Committed 10200 so far ✅
+Committing... total queued so far: 10300
+Committed 10300 so far ✅
+Committing... total queued so far: 10400
+Committed 10400 so far ✅
+Committing... total queued so far: 10500
+Committed 10500 so far ✅
+Committing... total queued so far: 10600
+Committed 10600 so far ✅
+Committing... total queued so far: 10700
+Committed 10700 so far ✅
+Committing... total queued so far: 10800
+Committed 10800 so far ✅
+Committing... total queued so far: 10900
+Committed 10900 so far ✅
+Committing... total queued so far: 11000
+Committed 11000 so far ✅
+Committing... total queued so far: 11100
+Committed 11100 so far ✅
+Committing... total queued so far: 11200
+Committed 11200 so far ✅
+Committing... total queued so far: 11300
+Committed 11300 so far ✅
+Committing... total queued so far: 11400
+Committed 11400 so far ✅
+Committing... total queued so far: 11500
+Committed 11500 so far ✅
+Committing... total queued so far: 11600
+Committed 11600 so far ✅
+Committing... total queued so far: 11700
+Committed 11700 so far ✅
+Committing... total queued so far: 11800
+Committed 11800 so far ✅
+Committing... total queued so far: 11900
+Committed 11900 so far ✅
+Committing... total queued so far: 12000
+Committed 12000 so far ✅
+^C

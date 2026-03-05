@@ -33,8 +33,10 @@ import admin from "firebase-admin";
 
 const SERVICE_ACCOUNT_PATH =
   process.env.SERVICE_ACCOUNT_PATH || "C:\\SageExports\\serviceAccountKey.json";
-const CSV_HH_PATH = process.env.CSV_HH_PATH || "C:\\SageExports\\Inv_HH.csv";
-const CSV_HD_PATH = process.env.CSV_HD_PATH || "C:\\SageExports\\Inv_HD.csv";
+const CSV_HH_PATH =
+  process.env.CSV_HH_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HH.csv";
+const CSV_HD_PATH =
+  process.env.CSV_HD_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HD.csv";
 const YEARS_BACK = Number(process.env.YEARS_BACK || 3);
 
 function cleanStr(v) {
@@ -119,10 +121,64 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// Watermark doc used to make this job incremental (only process invoices newer than last successful run)
+// Stored as ISO date (YYYY-MM-DD) plus lastInvoiceNo as a tie-breaker for same-day invoices.
+const STATE_REF = db.collection("etlState").doc("itemCustomerIndex");
+
+function toISODate(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function compareInvoiceKey(aDate, aNo, bDate, bNo) {
+  // returns -1/0/1
+  const ad = aDate?.getTime?.() ?? 0;
+  const bd = bDate?.getTime?.() ?? 0;
+  if (ad < bd) return -1;
+  if (ad > bd) return 1;
+  const an = cleanStr(aNo);
+  const bn = cleanStr(bNo);
+  if (an < bn) return -1;
+  if (an > bn) return 1;
+  return 0;
+}
+
 const cutoff = cutoffDate(YEARS_BACK);
-console.log(
-  `Building itemCustomerIndex for invoices with InvoiceDate >= ${cutoff.toLocaleDateString()} (YEARS_BACK=${YEARS_BACK})`
-);
+
+// Load watermark (if present)
+let wmDate = null;
+let wmInvoiceNo = "";
+try {
+  const snap = await STATE_REF.get();
+  if (snap.exists) {
+    const data = snap.data() || {};
+    const iso = cleanStr(data.lastInvoiceDateISO);
+    wmDate = iso ? new Date(`${iso}T00:00:00`) : null;
+    wmInvoiceNo = cleanStr(data.lastInvoiceNo);
+  }
+} catch {
+  // If state doc can't be read, fall back to full window.
+  wmDate = null;
+  wmInvoiceNo = "";
+}
+
+// Effective lower bound: max(rolling cutoff, watermark) if watermark exists
+let effectiveLower = cutoff;
+if (wmDate && wmDate > effectiveLower) effectiveLower = wmDate;
+
+if (wmDate) {
+  console.log(
+    `Building itemCustomerIndex incrementally for invoices newer than ${toISODate(effectiveLower)} (watermark=${toISODate(
+      wmDate
+    )}, lastInvoiceNo=${wmInvoiceNo || "(none)"}, YEARS_BACK=${YEARS_BACK})`
+  );
+} else {
+  console.log(
+    `Building itemCustomerIndex for invoices with InvoiceDate >= ${cutoff.toLocaleDateString()} (YEARS_BACK=${YEARS_BACK})`
+  );
+}
 
 // 1) Read headers and build invoiceNo -> { customerNo, salespersonNo } for in-range invoices
 console.log("Reading headers:", CSV_HH_PATH);
@@ -131,8 +187,11 @@ const hhParsed = Papa.parse(hhText, { header: true, skipEmptyLines: true });
 const hhRows = hhParsed.data || [];
 console.log("Header rows loaded:", hhRows.length);
 
-const invMap = new Map(); // invoiceNo -> { customerNo, salespersonNo }
+const invMap = new Map(); // invoiceNo -> { customerNo, salespersonNo, invoiceDate }
+const newInvoiceNos = new Set();
 let hhKept = 0;
+let newestInvoiceDate = wmDate;
+let newestInvoiceNo = wmInvoiceNo;
 
 for (let i = 0; i < hhRows.length; i++) {
   const r = hhRows[i] || {};
@@ -143,7 +202,13 @@ for (let i = 0; i < hhRows.length; i++) {
 
   const invoiceDateRaw = cleanStr(ciGet(r, "InvoiceDate") ?? ciGet(r, "Date"));
   const invoiceDate = parseUSDate(invoiceDateRaw);
-  if (!invoiceDate || invoiceDate < cutoff) continue;
+  if (!invoiceDate || invoiceDate < effectiveLower) continue;
+
+  // If watermark exists, only process strictly newer invoices (date/no tie-break)
+  if (wmDate) {
+    const cmp = compareInvoiceKey(invoiceDate, invoiceNo, wmDate, wmInvoiceNo);
+    if (cmp <= 0) continue;
+  }
 
   const customerNo = cleanStr(ciGet(r, "CustomerNo") ?? ciGet(r, "CustomerNumber"));
   const salespersonNo = padSalesperson(
@@ -152,11 +217,29 @@ for (let i = 0; i < hhRows.length; i++) {
 
   if (!customerNo || !salespersonNo) continue;
 
-  invMap.set(invoiceNo, { customerNo, salespersonNo });
+  invMap.set(invoiceNo, { customerNo, salespersonNo, invoiceDate });
+  newInvoiceNos.add(invoiceNo);
   hhKept++;
+
+  // Track newest processed invoice key for watermark update
+  if (!newestInvoiceDate) {
+    newestInvoiceDate = invoiceDate;
+    newestInvoiceNo = invoiceNo;
+  } else {
+    const cmpNew = compareInvoiceKey(invoiceDate, invoiceNo, newestInvoiceDate, newestInvoiceNo);
+    if (cmpNew > 0) {
+      newestInvoiceDate = invoiceDate;
+      newestInvoiceNo = invoiceNo;
+    }
+  }
 }
 
 console.log(`In-range invoices mapped: ${hhKept}`);
+
+if (hhKept === 0) {
+  console.log("No new invoices to process. Exiting.");
+  process.exit(0);
+}
 
 // 2) Read lines and build index: (itemCodeUpper, salespersonNo) -> Set(customerNo)
 console.log("Reading lines:", CSV_HD_PATH);
@@ -174,6 +257,9 @@ for (let i = 0; i < hdRows.length; i++) {
     ciGet(r, "InvoiceNo") ?? ciGet(r, "InvoiceNumber") ?? ciGet(r, "Invoice")
   );
   if (!invoiceNo) continue;
+
+  // Fast reject if this line isn't for a new invoice
+  if (!newInvoiceNos.has(invoiceNo)) continue;
 
   const header = invMap.get(invoiceNo);
   if (!header) continue;
@@ -195,42 +281,69 @@ for (let i = 0; i < hdRows.length; i++) {
 console.log(`Lines contributing to index: ${linesUsed}`);
 console.log(`Index docs to write: ${idx.size}`);
 
-// 3) Write to Firestore
+// 3) Merge + write to Firestore (union with existing docs)
+// Fetch existing docs in chunks so we don't lose previously indexed customers.
 let batch = db.batch();
 let batchCount = 0;
 const BATCH_LIMIT = 300; // docs may include arrays; keep batch smaller
 let written = 0;
 
-for (const [key, v] of idx.entries()) {
-  const docId = normalizeDocId(key);
-  const ref = db.collection("itemCustomerIndex").doc(docId);
+const entries = Array.from(idx.entries());
+const CHUNK = 200;
+for (let start = 0; start < entries.length; start += CHUNK) {
+  const chunk = entries.slice(start, start + CHUNK);
+  const refs = chunk.map(([key]) => db.collection("itemCustomerIndex").doc(normalizeDocId(key)));
+  const snaps = await db.getAll(...refs);
 
-  const customerNos = Array.from(v.customers.values()).sort();
-  const payload = {
-    itemCode: v.itemCode,
-    salespersonNo: v.salespersonNo,
-    customerNos,
-    customerCount: customerNos.length,
-    yearsBack: YEARS_BACK,
-    sourceFiles: {
-      headers: path.basename(CSV_HH_PATH),
-      lines: path.basename(CSV_HD_PATH),
-    },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
+  for (let j = 0; j < chunk.length; j++) {
+    const [key, v] = chunk[j];
+    const ref = refs[j];
+    const snap = snaps[j];
+    const existing = snap.exists ? snap.data() || {} : {};
+    const existingNos = Array.isArray(existing.customerNos) ? existing.customerNos.map(cleanStr) : [];
+    const merged = new Set(existingNos);
+    for (const c of v.customers.values()) merged.add(cleanStr(c));
+    const customerNos = Array.from(merged.values()).filter(Boolean).sort();
 
-  batch.set(ref, payload, { merge: true });
-  batchCount++;
-  written++;
+    const payload = {
+      itemCode: v.itemCode,
+      salespersonNo: v.salespersonNo,
+      customerNos,
+      customerCount: customerNos.length,
+      yearsBack: YEARS_BACK,
+      sourceFiles: {
+        headers: path.basename(CSV_HH_PATH),
+        lines: path.basename(CSV_HD_PATH),
+      },
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
 
-  if (batchCount >= BATCH_LIMIT) {
-    await commitWithRetry(batch);
-    batch = db.batch();
-    batchCount = 0;
-    process.stdout.write(`Committed index docs... ${written}\r`);
+    batch.set(ref, payload, { merge: true });
+    batchCount++;
+    written++;
+
+    if (batchCount >= BATCH_LIMIT) {
+      await commitWithRetry(batch);
+      batch = db.batch();
+      batchCount = 0;
+      process.stdout.write(`Committed index docs... ${written}\r`);
+    }
   }
 }
 
 if (batchCount > 0) await commitWithRetry(batch);
 
-console.log(`\nDONE. Wrote ${written} itemCustomerIndex docs.`);
+// 4) Update watermark only after successful writes
+if (newestInvoiceDate) {
+  await STATE_REF.set(
+    {
+      lastInvoiceDateISO: toISODate(newestInvoiceDate),
+      lastInvoiceNo: newestInvoiceNo,
+      yearsBack: YEARS_BACK,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+console.log(`\nDONE. Wrote/merged ${written} itemCustomerIndex docs.`);

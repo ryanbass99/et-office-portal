@@ -172,21 +172,6 @@ type CallPrepResponse = {
 
 const PAGE_SIZE = 50;
 const FETCH_CHUNK = 500;
-const IN_HOUSE_SALESPERSON_NO = "0001";
-
-function uniqueStrings(xs: string[]) {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const x of xs) {
-    const k = String(x || "").trim();
-    if (!k) continue;
-    const kk = k.toLowerCase();
-    if (seen.has(kk)) continue;
-    seen.add(kk);
-    out.push(k);
-  }
-  return out;
-}
 
 function toMoney(v: any) {
   if (v === null || v === undefined || v === "") return "";
@@ -297,12 +282,6 @@ export default function CustomersPage() {
   const [role, setRole] = useState<string>("");
   const isAdmin = role === "admin";
 
-  // Admin rep view:
-  // - "all" = show all customers (all salespeople)
-  // - "inhouse" = salesperson 0001 only
-  // - "rep" = specific salesperson pill
-  const [adminRepFilter, setAdminRepFilter] = useState<"all" | "inhouse" | "rep">("all");
-
   const [salespeople, setSalespeople] = useState<Salesperson[]>([]);
   const [selectedSalespersonNo, setSelectedSalespersonNo] = useState<string>("");
 
@@ -366,29 +345,21 @@ export default function CustomersPage() {
   const [groupFilterLoading, setGroupFilterLoading] = useState<boolean>(false);
   const [groupFilterError, setGroupFilterError] = useState<string>("");
 
-  const viewedSalespersonNo = useMemo(() => {
-    if (isAdmin) {
-      if (adminRepFilter === "inhouse") return IN_HOUSE_SALESPERSON_NO;
-      if (adminRepFilter === "rep") return normalizeSalespersonNo(selectedSalespersonNo);
-      return ""; // all reps
-    }
-    return normalizeSalespersonNo(salespersonNo);
-  }, [isAdmin, adminRepFilter, selectedSalespersonNo, salespersonNo]);
-
   const ownerUidForGroups = useMemo(() => {
-    // If admin is viewing a specific rep, groups belong to that rep's UID.
-    if (isAdmin && viewedSalespersonNo) {
-      const found = salespeople.find((x) => x.salespersonNo === viewedSalespersonNo);
+    // If admin has a rep selected, groups belong to that rep's UID
+    if (isAdmin && selectedSalespersonNo) {
+      const sp = normalizeSalespersonNo(selectedSalespersonNo);
+      const found = salespeople.find((x) => x.salespersonNo === sp);
       return found?.uid || currentUid;
     }
     // otherwise current signed-in user owns the groups
     return currentUid;
-  }, [isAdmin, viewedSalespersonNo, salespeople, currentUid]);
+  }, [isAdmin, selectedSalespersonNo, salespeople, currentUid]);
 
   const ownerSalespersonNoForGroups = useMemo(() => {
     // tie groups to the rep currently being viewed
-    return viewedSalespersonNo;
-  }, [viewedSalespersonNo]);
+    return normalizeSalespersonNo(selectedSalespersonNo || salespersonNo || "");
+  }, [selectedSalespersonNo, salespersonNo]);
 
   async function openGroupsForCustomer(c: Customer) {
     setGroupFor(c);
@@ -1189,36 +1160,6 @@ export default function CustomersPage() {
     setVisibleCount(PAGE_SIZE);
   }
 
-  async function fetchAllCustomersAllReps() {
-    setError("");
-
-    try {
-      const countSnap = await getCountFromServer(collection(db, "customers"));
-      setTotalForRep(countSnap.data().count);
-    } catch {
-      // ignore
-    }
-
-    let all: Customer[] = [];
-    let last: DocumentSnapshot | null = null;
-
-    while (true) {
-      const qAny: any = last
-        ? query(collection(db, "customers"), orderBy("customerName"), startAfter(last), limit(FETCH_CHUNK))
-        : query(collection(db, "customers"), orderBy("customerName"), limit(FETCH_CHUNK));
-
-      const snap = await getDocs(qAny);
-      all = all.concat(mapSnap(snap));
-
-      if (snap.docs.length < FETCH_CHUNK) break;
-      last = snap.docs[snap.docs.length - 1] as any;
-    }
-
-    setAllRows(all);
-    setVisibleCount(PAGE_SIZE);
-  }
-
-
   function looksLikeItemCode(raw: string) {
     const code = normalizeItemCode(raw);
 
@@ -1280,71 +1221,6 @@ export default function CustomersPage() {
       setItemLoading(false);
     }
   }
-
-  async function fetchCustomersWhoOrderedItemsAllReps(itemCodes: string[], repNos: string[]) {
-    const codes = Array.from(
-      new Set(
-        (itemCodes || [])
-          .map((x) => normalizeItemCode(x))
-          .filter(Boolean)
-          .slice(0, 25)
-      )
-    );
-
-    const reps = uniqueStrings((repNos || []).map((x) => normalizeSalespersonNo(x))).filter(Boolean);
-
-    if (!codes.length) {
-      setActiveItemCodes([]);
-      setActiveItemDisplay("");
-      setItemCustomerSet(null);
-      return;
-    }
-
-    if (!reps.length) return;
-
-    setItemError("");
-    setItemLoading(true);
-
-    try {
-      // Build doc refs for code+rep pairs.
-      const refs = [];
-      for (const code of codes) {
-        for (const rep of reps) {
-          refs.push(doc(db, "itemCustomerIndex", `${code}__${rep}`));
-        }
-      }
-
-      // Fetch in small chunks to avoid huge Promise bursts.
-      const CHUNK = 100;
-      const set = new Set<string>();
-
-      for (let i = 0; i < refs.length; i += CHUNK) {
-        const slice = refs.slice(i, i + CHUNK);
-        const snaps = await Promise.all(slice.map((r) => getDoc(r)));
-
-        for (const snap of snaps) {
-          if (!snap.exists()) continue;
-          const v = snap.data() as any;
-          const list: string[] = Array.isArray(v.customerNos) ? v.customerNos : [];
-          for (const x of list) {
-            const k = String(x ?? "").trim();
-            if (k) set.add(k);
-          }
-        }
-      }
-
-      setItemCustomerSet(set);
-    } catch (e: any) {
-      console.error(e);
-      setItemCustomerSet(null);
-      setItemError(
-        e?.code ? `${e.code}: ${e.message ?? ""}` : String(e?.message ?? e ?? "Unknown error")
-      );
-    } finally {
-      setItemLoading(false);
-    }
-  }
-
 
   async function findItemCodesByDescription(termRaw: string): Promise<string[]> {
     const raw = String(termRaw || "").trim();
@@ -1560,20 +1436,9 @@ export default function CustomersPage() {
       try {
         const userSnap = await getDoc(doc(db, "users", user.uid));
         const u = (userSnap.data() as any) || {};
-        const roleStr = String(u.role ?? "");
-        setRole(roleStr);
+        setRole(String(u.role ?? ""));
 
         const sp = normalizeSalespersonNo(String(u.salesperson ?? ""));
-
-        if (roleStr === "admin") {
-          // Default admin view = ALL salespeople
-          setAdminRepFilter("all");
-          setSelectedSalespersonNo("");
-          setSalespersonNo("");
-          await fetchAllCustomersAllReps();
-          return;
-        }
-
         setSalespersonNo(sp);
 
         if (!sp) {
@@ -1635,9 +1500,12 @@ export default function CustomersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-  // Admin-only: switch rep view when pills change
+  // Admin-only: switch rep when a pill is clicked
   useEffect(() => {
     if (!isAdmin) return;
+
+    const sp = normalizeSalespersonNo(selectedSalespersonNo);
+    if (!sp) return;
 
     (async () => {
       setLoading(true);
@@ -1647,19 +1515,6 @@ export default function CustomersPage() {
       setTotalForRep(null);
 
       try {
-        if (adminRepFilter === "all") {
-          setSalespersonNo("");
-          await fetchAllCustomersAllReps();
-          return;
-        }
-
-        const sp =
-          adminRepFilter === "inhouse"
-            ? IN_HOUSE_SALESPERSON_NO
-            : normalizeSalespersonNo(selectedSalespersonNo);
-
-        if (!sp) return;
-
         setSalespersonNo(sp);
         await fetchAllForRep(sp);
       } catch (e: any) {
@@ -1673,7 +1528,7 @@ export default function CustomersPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adminRepFilter, selectedSalespersonNo, isAdmin]);
+  }, [selectedSalespersonNo, isAdmin]);
 
   // quick preset from Sales Tools: /customers?quick=whitespace&top50=1&item=K411
   useEffect(() => {
@@ -1812,7 +1667,7 @@ export default function CustomersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemInput]);
 
-  // Only fetch buyers list once item + view are known
+  // Only fetch buyers list once BOTH item + rep are known
   useEffect(() => {
     if (!activeItemCodes.length) {
       setItemCustomerSet(null);
@@ -1820,24 +1675,12 @@ export default function CustomersPage() {
       setItemLoading(false);
       return;
     }
+    if (!salespersonNo) return;
 
-    // Admin ALL: union across all reps
-    if (isAdmin && adminRepFilter === "all") {
-      const repNos = uniqueStrings(
-        [IN_HOUSE_SALESPERSON_NO, ...(salespeople || []).map((s) => s.salespersonNo)]
-      );
-      fetchCustomersWhoOrderedItemsAllReps(activeItemCodes, repNos);
-      setVisibleCount(PAGE_SIZE);
-      return;
-    }
-
-    const rep = viewedSalespersonNo;
-    if (!rep) return;
-
-    fetchCustomersWhoOrderedItems(activeItemCodes, rep);
+    fetchCustomersWhoOrderedItems(activeItemCodes, salespersonNo);
     setVisibleCount(PAGE_SIZE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeItemCodes, viewedSalespersonNo, isAdmin, adminRepFilter, salespeople]);
+  }, [activeItemCodes, salespersonNo]);
 
   const filteredAll = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -2074,7 +1917,7 @@ export default function CustomersPage() {
               Showing {visibleRows.length} • Total: {topRows.length}
             </p>
             <p className="text-gray-500 text-xs">
-              Rep: {isAdmin && adminRepFilter === "all" ? "ALL" : salespersonNo || "(none)"}
+              Rep: {salespersonNo || "(none)"}
               {totalForRep !== null ? ` • Total: ${totalForRep}` : ""}
             </p>
 
@@ -2330,13 +2173,6 @@ export default function CustomersPage() {
                         if (!raw) return;
 
                         (async () => {
-                          const allowAll = isAdmin && adminRepFilter === "all";
-                          const rep = viewedSalespersonNo;
-                          if (!rep && !allowAll) {
-                            setItemError("Item filter requires a salesman (choose In House or a rep).");
-                            return;
-                          }
-
                           setInvertItemFilter(false);
                           setItemError("");
                           setItemCustomerSet(null);
@@ -2419,14 +2255,7 @@ export default function CustomersPage() {
                     if (!raw) return;
 
                     (async () => {
-                      const allowAll = isAdmin && adminRepFilter === "all";
-                          const rep = viewedSalespersonNo;
-                          if (!rep && !allowAll) {
-                            setItemError("Item filter requires a salesman (choose In House or a rep).");
-                            return;
-                          }
-
-                          setInvertItemFilter(false);
+                      setInvertItemFilter(false);
                       setItemError("");
                       setItemCustomerSet(null);
 
@@ -2518,58 +2347,36 @@ export default function CustomersPage() {
               {/* Admin-only: Salesman filter pills */}
               {isAdmin ? (
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {salespeople.length > 0 ? (
+                  {salespeople.length ? (
                     <>
                       <button
                         type="button"
                         className={`px-3 py-1 rounded-full border text-xs ${
-                          adminRepFilter === "all"
+                          !selectedSalespersonNo
                             ? "bg-gray-900 text-white border-gray-900"
                             : "bg-white hover:bg-gray-50"
                         }`}
-                        onClick={() => {
-                          setAdminRepFilter("all");
-                          setSelectedSalespersonNo("");
-                        }}
-                        title="Show ALL customers (all salespeople)"
+                        onClick={() => setSelectedSalespersonNo("")}
+                        title="Clear salesman filter"
                       >
                         All Salesmen
                       </button>
 
-                      <button
-                        type="button"
-                        className={`px-3 py-1 rounded-full border text-xs ${
-                          adminRepFilter === "inhouse"
-                            ? "bg-gray-900 text-white border-gray-900"
-                            : "bg-white hover:bg-gray-50"
-                        }`}
-                        onClick={() => {
-                          setAdminRepFilter("inhouse");
-                          setSelectedSalespersonNo("");
-                        }}
-                        title={`In House only (#${IN_HOUSE_SALESPERSON_NO})`}
-                      >
-                        In House
-                      </button>
-
-                        {salespeople.map((sp) => (
-                          <button
-                            key={sp.uid}
-                            type="button"
-                            className={`px-3 py-1 rounded-full border text-xs ${
-                              adminRepFilter === "rep" && selectedSalespersonNo === sp.salespersonNo
-                                ? "bg-gray-900 text-white border-gray-900"
-                                : "bg-white hover:bg-gray-50"
-                            }`}
-                            onClick={() => {
-                              setAdminRepFilter("rep");
-                              setSelectedSalespersonNo(sp.salespersonNo);
-                            }}
-                            title={`Salesperson #${sp.salespersonNo}`}
-                          >
-                            {sp.name}
-                          </button>
-                        ))}
+                      {salespeople.map((sp) => (
+                        <button
+                          key={sp.uid}
+                          type="button"
+                          className={`px-3 py-1 rounded-full border text-xs ${
+                            selectedSalespersonNo === sp.salespersonNo
+                              ? "bg-gray-900 text-white border-gray-900"
+                              : "bg-white hover:bg-gray-50"
+                          }`}
+                          onClick={() => setSelectedSalespersonNo(sp.salespersonNo)}
+                          title={`Salesperson #${sp.salespersonNo}`}
+                        >
+                          {sp.name}
+                        </button>
+                      ))}
                     </>
                   ) : (
                     <span className="text-xs text-gray-500">No salesmen found.</span>

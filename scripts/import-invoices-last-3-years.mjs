@@ -33,8 +33,8 @@ import admin from "firebase-admin";
 
 const SERVICE_ACCOUNT_PATH =
   process.env.SERVICE_ACCOUNT_PATH || "C:\\SageExports\\serviceAccountKey.json";
-const CSV_HH_PATH = process.env.CSV_HH_PATH || "C:\\SageExports\\Inv_HH.csv";
-const CSV_HD_PATH = process.env.CSV_HD_PATH || "C:\\SageExports\\Inv_HD.csv";
+const CSV_HH_PATH = process.env.CSV_HH_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HH.csv";
+const CSV_HD_PATH = process.env.CSV_HD_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HD.csv";
 const YEARS_BACK = Number(process.env.YEARS_BACK || 3);
 
 // Tune if you want
@@ -135,45 +135,101 @@ function ciGet(row, key) {
 }
 
 function streamParseCsv(filePath, onRow, label) {
+  // Node streaming with PapaParse must be done by creating a parser stream via
+  // Papa.parse(Papa.NODE_STREAM_INPUT, config) and piping the file stream into it.
+  // Passing the fs stream directly to Papa.parse(stream, ...) can cause Papa to treat
+  // each chunk like a new parse, spamming "Duplicate headers found and renamed."
   return new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    const fileStream = fs.createReadStream(filePath, { encoding: "utf8" });
 
     let rowCount = 0;
     let skippedCount = 0;
     let parseErrorCount = 0;
 
-    Papa.parse(stream, {
+    const papaStream = Papa.parse(Papa.NODE_STREAM_INPUT, {
       header: true,
       skipEmptyLines: "greedy",
       quoteChar: '"',
       escapeChar: '"',
       transformHeader: (h) => String(h ?? "").replace(/^\uFEFF/, "").trim(),
-      beforeFirstChunk: (chunk) => chunk.replace(/^\uFEFF/, ""), // strip BOM
-      step: async (results) => {
-        rowCount++;
-        const row = results?.data;
+      beforeFirstChunk: (chunk) => {
+  // Strip UTF-8 BOM if present
+  let c = chunk.replace(/^\uFEFF/, "");
 
-        if (!row || typeof row !== "object" || Object.keys(row).length === 0) {
-          skippedCount++;
-          return;
-        }
+  // Deduplicate header names on the very first line to avoid PapaParse
+  // spamming "Duplicate headers found and renamed."
+  const nl = c.indexOf("\n");
+  if (nl === -1) return c;
 
-        if (results?.errors?.length) {
-          parseErrorCount += results.errors.length;
-        }
+  const headerLine = c.slice(0, nl).replace(/\r$/, "");
+  const rest = c.slice(nl + 1);
 
-        try {
-          const ok = await onRow(row, rowCount);
-          if (!ok) skippedCount++;
-        } catch {
-          skippedCount++;
-        }
+  // Split CSV header respecting simple quoted headers
+  const cols = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < headerLine.length; i++) {
+    const ch = headerLine[i];
+    if (ch === '"') {
+      const next = headerLine[i + 1];
+      if (inQ && next === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQ = !inQ;
+      }
+    } else if (ch === "," && !inQ) {
+      cols.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  cols.push(cur);
 
-        if (rowCount % 200000 === 0) {
-          process.stdout.write(
-            `${label}: parsed ${rowCount.toLocaleString()} rows (skipped ${skippedCount.toLocaleString()}, parseErr ${parseErrorCount.toLocaleString()})\r`
-          );
-        }
+  const seen = new Map();
+  const deduped = cols.map((raw) => {
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    const n = (seen.get(key) || 0) + 1;
+    seen.set(key, n);
+    if (n === 1) return raw;
+
+    const base = name.replace(/^"|"$/g, "");
+    const outName = base + `_${n}`;
+    return raw.startsWith('"') ? `"${outName}"` : outName;
+  });
+
+  return deduped.join(",") + "\n" + rest;
+},
+      step: (results, parser) => {
+        parser.pause();
+        (async () => {
+          rowCount++;
+          const row = results?.data;
+
+          if (!row || typeof row !== "object" || Object.keys(row).length === 0) {
+            skippedCount++;
+            return;
+          }
+
+          if (results?.errors?.length) {
+            parseErrorCount += results.errors.length;
+          }
+
+          try {
+            const ok = await onRow(row, rowCount);
+            if (!ok) skippedCount++;
+          } catch {
+            skippedCount++;
+          }
+
+          if (rowCount % 200000 === 0) {
+            process.stdout.write(
+              `${label}: parsed ${rowCount.toLocaleString()} rows (skipped ${skippedCount.toLocaleString()}, parseErr ${parseErrorCount.toLocaleString()})\r`
+            );
+          }
+        })().finally(() => parser.resume());
       },
       complete: () => {
         process.stdout.write(
@@ -183,10 +239,14 @@ function streamParseCsv(filePath, onRow, label) {
       },
       error: (err) => reject(err),
     });
+
+    papaStream.on("error", reject);
+    fileStream.on("error", reject);
+    fileStream.pipe(papaStream);
   });
 }
 
-if (!osExists(SERVICE_ACCOUNT_PATH)) {
+if (!osExistsif (!osExists(SERVICE_ACCOUNT_PATH)) {
   throw new Error(`Service account key not found at: ${SERVICE_ACCOUNT_PATH}`);
 }
 if (!osExists(CSV_HH_PATH)) {
