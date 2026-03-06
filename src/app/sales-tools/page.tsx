@@ -4,10 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import NextBestProductCard from "../components/NextBestProductCard";
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
   limit,
+  orderBy,
   query,
   where,
 } from "firebase/firestore";
@@ -30,10 +32,16 @@ type ItemSuggestion = {
   itemCodeDesc?: string;
 };
 
-// Normalize user input into the exact token we want to `array-contains`.
-// - Uses the LAST word so "pokemon display" still works.
-// - Uppercases
-// - Removes punctuation
+type PurchaseLookupRow = {
+  key: string;
+  customerNo: string;
+  customerName: string;
+  invoiceNo: string;
+  invoiceDateRaw: any;
+  invoiceDateText: string;
+  quantityShipped: number;
+};
+
 function toSearchToken(input: string) {
   const raw = (input || "").trim();
   if (!raw) return "";
@@ -41,9 +49,81 @@ function toSearchToken(input: string) {
   const parts = raw.split(/\s+/).filter(Boolean);
   const last = parts[parts.length - 1] || "";
 
-  // keep only A-Z/0-9 to match typical prefix arrays
   const tokenUpper = last.toUpperCase().replace(/[^A-Z0-9]/g, "");
   return tokenUpper.slice(0, 24);
+}
+
+function normalizeCode(input: string) {
+  return String(input || "").trim().toUpperCase();
+}
+
+function normalizeRep(input: any) {
+  return String(input ?? "")
+    .trim()
+    .replace(/\D/g, "")
+    .padStart(4, "0");
+}
+
+function toJsDate(value: any): Date | null {
+  if (!value) return null;
+
+  if (typeof value?.toDate === "function") {
+    const d = value.toDate();
+    return d instanceof Date && !isNaN(d.getTime()) ? d : null;
+  }
+
+  if (value instanceof Date) {
+    return !isNaN(value.getTime()) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+
+    const direct = new Date(s);
+    if (!isNaN(direct.getTime())) return direct;
+
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) {
+      const mm = Number(m[1]);
+      const dd = Number(m[2]);
+      const yyyy = Number(m[3]);
+      const d = new Date(yyyy, mm - 1, dd);
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+
+  if (
+    typeof value === "object" &&
+    typeof value.seconds === "number" &&
+    typeof value.nanoseconds === "number"
+  ) {
+    const d = new Date(value.seconds * 1000);
+    return !isNaN(d.getTime()) ? d : null;
+  }
+
+  return null;
+}
+
+function formatDateMMDDYYYY(value: any) {
+  const d = toJsDate(value);
+  if (!d) return "";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function getCustomerRep(data: any) {
+  return normalizeRep(
+    data?.salespersonNo ??
+      data?.salesmanNo ??
+      data?.salesperson ??
+      data?.salesman ??
+      data?.repNo ??
+      data?.rep ??
+      ""
+  );
 }
 
 export default function SalesToolsPage() {
@@ -64,12 +144,22 @@ export default function SalesToolsPage() {
   const [loadingOpps, setLoadingOpps] = useState(false);
   const [buyersError, setBuyersError] = useState<string | null>(null);
 
-  const canSearch = useMemo(() => itemCode.trim().length > 0, [itemCode]);
+  const [purchaseItemCode, setPurchaseItemCode] = useState("");
+  const [purchaseRows, setPurchaseRows] = useState<PurchaseLookupRow[]>([]);
+  const [loadingPurchases, setLoadingPurchases] = useState(false);
+  const [purchasesError, setPurchasesError] = useState<string | null>(null);
+  const [purchaseSearchRan, setPurchaseSearchRan] = useState(false);
 
+  const canSearch = useMemo(() => itemCode.trim().length > 0, [itemCode]);
   const tokenUpper = useMemo(() => toSearchToken(itemSearch), [itemSearch]);
   const canSearchByName = useMemo(() => tokenUpper.length > 1, [tokenUpper]);
+  const canSearchPurchases = useMemo(
+    () => normalizeCode(purchaseItemCode).length > 0,
+    [purchaseItemCode]
+  );
 
   const mountedRef = useRef(true);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -77,7 +167,6 @@ export default function SalesToolsPage() {
     };
   }, []);
 
-  // Load rep number from /users/{uid}.salesperson
   useEffect(() => {
     const auth = getAuth();
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -94,7 +183,9 @@ export default function SalesToolsPage() {
         if (snap.exists()) {
           const data = snap.data() as any;
           if (data?.salesperson) {
-            setRepNo(String(data.salesperson).padStart(4, "0"));
+            setRepNo(normalizeRep(data.salesperson));
+          } else {
+            setRepNo(null);
           }
         }
       } catch {
@@ -105,7 +196,6 @@ export default function SalesToolsPage() {
     return () => unsub();
   }, []);
 
-  // Name search suggestions (itemsMaster.searchPrefixes)
   useEffect(() => {
     if (!canSearchByName) {
       setItemSuggestions([]);
@@ -131,8 +221,6 @@ export default function SalesToolsPage() {
         const rows: ItemSuggestion[] = [];
         snap.forEach((d) => {
           const data = d.data() as any;
-
-          // doc id is also the item code in your data (e.g., K604)
           const code = String(data.itemCode || data.ItemCode || d.id || "").trim();
           if (!code) return;
 
@@ -164,9 +252,8 @@ export default function SalesToolsPage() {
     };
   }, [canSearchByName, tokenUpper]);
 
-  // ✅ allow forcedCode so clicking a suggestion can auto-run search immediately
   async function onSearch(forcedCode?: string) {
-    const code = (forcedCode ?? itemCode).trim().toUpperCase();
+    const code = normalizeCode(forcedCode ?? itemCode);
     if (!code) return;
 
     if (!repNo) {
@@ -244,6 +331,102 @@ export default function SalesToolsPage() {
     }
   }
 
+  async function onPurchaseLookupSearch() {
+    const code = normalizeCode(purchaseItemCode);
+    if (!code) return;
+
+    if (!repNo) {
+      setPurchasesError("Rep not loaded yet. Please refresh or wait a second and try again.");
+      return;
+    }
+
+    setPurchaseSearchRan(true);
+    setLoadingPurchases(true);
+    setPurchasesError(null);
+    setPurchaseRows([]);
+
+    try {
+      const linesRef = collectionGroup(db, "lines");
+      const q = query(
+        linesRef,
+        where("itemCode", "==", code),
+        orderBy("invoiceDate", "desc"),
+        limit(1000)
+      );
+      const snap = await getDocs(q);
+
+      const customerCache = new Map<string, { name: string; rep: string }>();
+      const invoiceMap = new Map<string, PurchaseLookupRow>();
+
+      for (const lineDoc of snap.docs) {
+        const data = lineDoc.data() as any;
+
+        const customerNo = String(data.customerNo || "").trim();
+        if (!customerNo) continue;
+
+        let cached = customerCache.get(customerNo);
+        if (!cached) {
+          let name = "";
+          let rep = "";
+          try {
+            const customerSnap = await getDoc(doc(db, "customers", customerNo));
+            if (customerSnap.exists()) {
+              const c = customerSnap.data() as any;
+              name = String(c.customerName || "").trim();
+              rep = getCustomerRep(c);
+            }
+          } catch {
+            // ignore per-customer read failure
+          }
+
+          cached = { name, rep };
+          customerCache.set(customerNo, cached);
+        }
+
+        if (cached.rep !== repNo) continue;
+
+        const invoiceNo = String(data.invoiceNo || "").trim();
+        const invoiceDateRaw = data.invoiceDate ?? null;
+        const invoiceDateText = formatDateMMDDYYYY(invoiceDateRaw);
+        const qty = Number(data.quantityShipped ?? 0);
+
+        const dedupeKey = `${customerNo}__${invoiceNo}__${invoiceDateText}__${code}`;
+        const existing = invoiceMap.get(dedupeKey);
+
+        if (!existing) {
+          invoiceMap.set(dedupeKey, {
+            key: dedupeKey,
+            customerNo,
+            customerName: cached.name || `Customer ${customerNo}`,
+            invoiceNo,
+            invoiceDateRaw,
+            invoiceDateText,
+            quantityShipped: qty,
+          });
+        } else {
+          existing.quantityShipped = Math.max(existing.quantityShipped, qty);
+        }
+      }
+
+      const rows = Array.from(invoiceMap.values());
+
+      rows.sort((a, b) => {
+        const aTime = toJsDate(a.invoiceDateRaw)?.getTime() ?? -1;
+        const bTime = toJsDate(b.invoiceDateRaw)?.getTime() ?? -1;
+        return bTime - aTime;
+      });
+
+      if (!mountedRef.current) return;
+      setPurchaseRows(rows);
+    } catch (e: any) {
+      if (!mountedRef.current) return;
+      console.error("Item Purchase Lookup error:", e);
+      setPurchasesError(e?.message || "Failed to load purchase history.");
+    } finally {
+      if (mountedRef.current) setLoadingPurchases(false);
+    }
+  }
+
   function onClear() {
     setItemCode("");
     setItemSearch("");
@@ -257,6 +440,14 @@ export default function SalesToolsPage() {
     setBuyersError(null);
     setLoadingBuyers(false);
     setLoadingOpps(false);
+  }
+
+  function onClearPurchaseLookup() {
+    setPurchaseItemCode("");
+    setPurchaseRows([]);
+    setPurchasesError(null);
+    setLoadingPurchases(false);
+    setPurchaseSearchRan(false);
   }
 
   return (
@@ -341,7 +532,6 @@ export default function SalesToolsPage() {
                             setItemSuggestions([]);
                             setLoadingSuggestions(false);
 
-                            // ✅ auto-search on click
                             setTimeout(() => onSearch(code), 0);
                           }}
                           className="w-full text-left px-3 py-2 hover:bg-gray-50"
@@ -408,9 +598,7 @@ export default function SalesToolsPage() {
                     key={b.customerNo}
                     onClick={() => loadOppsForBuyer(b)}
                     className={`rounded border border-gray-200 px-3 py-2 cursor-pointer hover:bg-gray-50 ${
-                      selectedBuyer?.customerNo === b.customerNo
-                        ? "ring-2 ring-gray-900"
-                        : ""
+                      selectedBuyer?.customerNo === b.customerNo ? "ring-2 ring-gray-900" : ""
                     }`}
                     title="Click to find 4 similar stores in the same tier that haven’t bought it"
                   >
@@ -421,9 +609,7 @@ export default function SalesToolsPage() {
                       {b.city ? `${b.city}, ` : ""}
                       {b.state || ""}
                       {b.tier ? ` • Tier: ${b.tier}` : ""}
-                      {typeof b.sales25 === "number"
-                        ? ` • $${b.sales25.toLocaleString()}`
-                        : ""}
+                      {typeof b.sales25 === "number" ? ` • $${b.sales25.toLocaleString()}` : ""}
                     </div>
                     <div className="text-xs text-gray-500 font-mono">
                       {b.customerNo}
@@ -461,7 +647,10 @@ export default function SalesToolsPage() {
             ) : (
               <div className="space-y-2">
                 {opportunities.map((o) => (
-                  <div key={o.customerNo} className="rounded border border-gray-200 px-3 py-2">
+                  <div
+                    key={o.customerNo}
+                    className="rounded border border-gray-200 px-3 py-2"
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="text-sm font-semibold">
                         {o.name?.trim() ? o.name : `Customer ${o.customerNo}`}
@@ -486,9 +675,7 @@ export default function SalesToolsPage() {
                       {o.city ? `${o.city}, ` : ""}
                       {o.state || ""}
                       {o.tier ? ` • Tier: ${o.tier}` : ""}
-                      {typeof o.sales25 === "number"
-                        ? ` • $${o.sales25.toLocaleString()}`
-                        : ""}
+                      {typeof o.sales25 === "number" ? ` • $${o.sales25.toLocaleString()}` : ""}
                     </div>
                     <div className="text-xs text-gray-500 font-mono">
                       {o.customerNo}
@@ -500,6 +687,99 @@ export default function SalesToolsPage() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-4 border border-black">
+        <h2 className="text-lg font-semibold mb-3">Item Purchase Lookup</h2>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1 max-w-md">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Item Code
+            </label>
+            <input
+              value={purchaseItemCode}
+              onChange={(e) => setPurchaseItemCode(e.target.value.toUpperCase())}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onPurchaseLookupSearch();
+              }}
+              placeholder="e.g. K160"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onPurchaseLookupSearch}
+              disabled={!canSearchPurchases || loadingPurchases}
+              className={`px-4 py-2 rounded border text-sm ${
+                !canSearchPurchases || loadingPurchases
+                  ? "bg-gray-100 text-gray-400 border-gray-200"
+                  : "bg-gray-900 text-white border-gray-900 hover:bg-black"
+              }`}
+            >
+              Search
+            </button>
+
+            <button
+              type="button"
+              onClick={onClearPurchaseLookup}
+              className="px-4 py-2 rounded border text-sm bg-white border-gray-300 hover:bg-gray-50"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 border border-gray-200 rounded overflow-hidden">
+          {purchasesError ? (
+            <div className="p-3 text-sm text-red-600">{purchasesError}</div>
+          ) : loadingPurchases ? (
+            <div className="p-3 text-sm text-gray-600">Loading…</div>
+          ) : !purchaseSearchRan ? (
+            <div className="p-3 text-sm text-gray-600">
+              Enter an item code and click Search.
+            </div>
+          ) : purchaseRows.length === 0 ? (
+            <div className="p-3 text-sm text-gray-600">No purchase history found.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-semibold">Account #</th>
+                    <th className="text-left px-3 py-2 font-semibold">Customer Name</th>
+                    <th className="text-left px-3 py-2 font-semibold">Invoice Date</th>
+                    <th className="text-left px-3 py-2 font-semibold">Invoice #</th>
+                    <th className="text-right px-3 py-2 font-semibold">Qty</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseRows.map((row) => (
+                    <tr key={row.key} className="border-b border-gray-100">
+                      <td className="px-3 py-2 font-mono">{row.customerNo}</td>
+                      <td className="px-3 py-2">{row.customerName}</td>
+                      <td className="px-3 py-2">{row.invoiceDateText || "—"}</td>
+                      <td className="px-3 py-2 font-mono">{row.invoiceNo || "—"}</td>
+                      <td className="px-3 py-2 text-right">
+                        {Number.isFinite(row.quantityShipped)
+                          ? row.quantityShipped.toLocaleString()
+                          : "0"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {purchaseRows.length > 0 ? (
+          <div className="mt-2 text-xs text-gray-500">
+            Showing one row per invoice for the logged-in rep, newest first.
+          </div>
+        ) : null}
       </div>
 
       <div className="bg-white rounded-lg shadow p-4 border border-black">
