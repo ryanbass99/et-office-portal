@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   MapContainer,
@@ -8,7 +8,6 @@ import {
   Marker,
   Popup,
   Circle,
-  useMap,
   useMapEvents,
 } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
@@ -91,8 +90,6 @@ type ActionState =
   | null;
 
 const ACCOUNT_PIN_ZOOM = 9;
-const DEFAULT_CENTER: [number, number] = [41.878, -93.0977];
-const DEFAULT_ZOOM = 7;
 
 const greenIcon = new L.Icon({
   iconUrl:
@@ -301,57 +298,6 @@ function ZoomWatcher({ onZoomChange }: { onZoomChange: (zoom: number) => void })
   return null;
 }
 
-function FitMapToVisibleData({
-  accounts,
-  prospects,
-  showAccounts,
-  showProspects,
-}: {
-  accounts: CustomerLocation[];
-  prospects: Prospect[];
-  showAccounts: boolean;
-  showProspects: boolean;
-}) {
-  const map = useMap();
-  const hasFitRef = useRef(false);
-
-  useEffect(() => {
-    const visiblePoints: [number, number][] = [
-      ...(showAccounts
-        ? accounts
-            .filter((a) => Number.isFinite(a.lat) && Number.isFinite(a.lng))
-            .map((a) => [a.lat, a.lng] as [number, number])
-        : []),
-      ...(showProspects
-        ? prospects
-            .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng))
-            .map((p) => [p.lat, p.lng] as [number, number])
-        : []),
-    ];
-
-    if (!visiblePoints.length) {
-      hasFitRef.current = false;
-      return;
-    }
-
-    if (hasFitRef.current) return;
-
-    if (visiblePoints.length === 1) {
-      map.setView(visiblePoints[0], 11, { animate: false });
-      hasFitRef.current = true;
-      return;
-    }
-
-    map.fitBounds(L.latLngBounds(visiblePoints), {
-      padding: [40, 40],
-      animate: false,
-    });
-    hasFitRef.current = true;
-  }, [map, accounts, prospects, showAccounts, showProspects]);
-
-  return null;
-}
-
 function actionPillStyle(background: string, color: string, border: string) {
   return {
     padding: "4px 8px",
@@ -375,7 +321,7 @@ export default function TerritoryMapClient() {
   const [hubs, setHubs] = useState<TerritoryHub[]>([]);
   const [showAccounts, setShowAccounts] = useState(true);
   const [showProspects, setShowProspects] = useState(true);
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  const [zoom, setZoom] = useState(7);
   const [actionState, setActionState] = useState<ActionState>(null);
 
   useEffect(() => {
@@ -544,7 +490,12 @@ export default function TerritoryMapClient() {
     };
   }, []);
 
-  const center = useMemo<[number, number]>(() => DEFAULT_CENTER, []);
+  const center = useMemo<[number, number]>(() => {
+    if (hubs.length) return [hubs[0].lat, hubs[0].lng];
+    if (accounts.length) return [accounts[0].lat, accounts[0].lng];
+    if (prospects.length) return [prospects[0].lat, prospects[0].lng];
+    return [46.8772, -96.7898];
+  }, [hubs, accounts, prospects]);
 
   const prospectClusterKey = useMemo(() => {
     return prospects
@@ -654,18 +605,12 @@ export default function TerritoryMapClient() {
 
       <MapContainer
         center={center}
-        zoom={DEFAULT_ZOOM}
+        zoom={7}
         scrollWheelZoom
         closePopupOnClick={true}
         style={{ height: "72vh", width: "100%" }}
       >
         <ZoomWatcher onZoomChange={setZoom} />
-        <FitMapToVisibleData
-          accounts={accounts}
-          prospects={prospects}
-          showAccounts={showAccounts}
-          showProspects={showProspects}
-        />
 
         <TileLayer
           attribution="&copy; OpenStreetMap contributors"
@@ -747,7 +692,7 @@ export default function TerritoryMapClient() {
             maxClusterRadius={50}
             spiderfyOnMaxZoom
             zoomToBoundsOnClick
-            iconCreateFunction={(cluster) =>
+            iconCreateFunction={(cluster: any) =>
               createClusterCustomIcon(cluster, "#d32f2f")
             }
           >
