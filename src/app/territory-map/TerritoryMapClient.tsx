@@ -707,7 +707,7 @@ export default function TerritoryMapClient() {
             spiderfyOnMaxZoom
             zoomToBoundsOnClick
             disableClusteringAtZoom={10}
-            iconCreateFunction={(cluster) =>
+            iconCreateFunction={(cluster: any) =>
               createClusterCustomIcon(cluster, "#16a34a")
             }
           >
