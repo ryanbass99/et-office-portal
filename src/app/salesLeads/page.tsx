@@ -52,7 +52,7 @@ function dateInputToTimestamp(dateStr: string) {
   return Timestamp.fromDate(new Date(y, m - 1, d, 12, 0, 0));
 }
 
-function timestampToDateInput(ts?: Timestamp) {
+function timestampToDateInput(ts?: Timestamp | null) {
   if (!ts?.toDate) return "";
   const d = ts.toDate();
   const y = d.getFullYear();
@@ -65,7 +65,7 @@ function startOfDay(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
 }
 
-function daysUntil(ts?: Timestamp) {
+function daysUntil(ts?: Timestamp | null) {
   if (!ts?.toDate) return null;
   const today = startOfDay(new Date()).getTime();
   const target = startOfDay(ts.toDate()).getTime();
