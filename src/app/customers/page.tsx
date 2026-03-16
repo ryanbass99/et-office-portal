@@ -1870,7 +1870,14 @@ export default function CustomersPage() {
       }
 
       if (creditHoldOnly && c.creditHoldBool !== true) return false;
-      if (activityBucket && (c.lastActivityBucket ?? "") !== activityBucket) return false;
+      if (activityBucket) {
+  const age = getCustomerAgeDays(c);
+  if (age === null) return false;
+
+  if (activityBucket === "lt60" && age >= 60) return false;
+  if (activityBucket === "60_120" && (age < 60 || age > 120)) return false;
+  if (activityBucket === "gt120" && age <= 120) return false;
+}
       if (statusFilter && String(c.status ?? "") !== statusFilter) return false;
       if (stateFilter && String(c.stateUpper ?? "") !== stateFilter) return false;
 

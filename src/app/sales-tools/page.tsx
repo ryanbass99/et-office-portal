@@ -114,16 +114,33 @@ function formatDateMMDDYYYY(value: any) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
-function getCustomerRep(data: any) {
-  return normalizeRep(
-    data?.salespersonNo ??
-      data?.salesmanNo ??
-      data?.salesperson ??
-      data?.salesman ??
-      data?.repNo ??
-      data?.rep ??
-      ""
-  );
+function getCustomerReps(data: any) {
+  const rawValues = [
+    data?.salespersonNo,
+    data?.salesmanNo,
+    data?.salesperson,
+    data?.salesman,
+    data?.repNo,
+    data?.rep,
+    data?.salespersonNo2,
+    data?.salesmanNo2,
+    data?.salesperson2,
+    data?.salesman2,
+    data?.repNo2,
+    data?.rep2,
+    data?.secondarySalespersonNo,
+    data?.secondarySalesmanNo,
+    data?.secondarySalesperson,
+    data?.secondarySalesman,
+    data?.secondaryRepNo,
+    data?.secondaryRep,
+  ];
+
+  const reps = rawValues
+    .map((value) => normalizeRep(value))
+    .filter(Boolean);
+
+  return Array.from(new Set(reps));
 }
 
 export default function SalesToolsPage() {
@@ -355,7 +372,7 @@ export default function SalesToolsPage() {
       );
       const snap = await getDocs(q);
 
-      const customerCache = new Map<string, { name: string; rep: string }>();
+      const customerCache = new Map<string, { name: string; reps: string[] }>();
       const invoiceMap = new Map<string, PurchaseLookupRow>();
 
       for (const lineDoc of snap.docs) {
@@ -367,23 +384,23 @@ export default function SalesToolsPage() {
         let cached = customerCache.get(customerNo);
         if (!cached) {
           let name = "";
-          let rep = "";
+          let reps: string[] = [];
           try {
             const customerSnap = await getDoc(doc(db, "customers", customerNo));
             if (customerSnap.exists()) {
               const c = customerSnap.data() as any;
               name = String(c.customerName || "").trim();
-              rep = getCustomerRep(c);
+              reps = getCustomerReps(c);
             }
           } catch {
             // ignore per-customer read failure
           }
 
-          cached = { name, rep };
+          cached = { name, reps };
           customerCache.set(customerNo, cached);
         }
 
-        if (cached.rep !== repNo) continue;
+        if (!cached.reps.includes(repNo)) continue;
 
         const invoiceNo = String(data.invoiceNo || "").trim();
         const invoiceDateRaw = data.invoiceDate ?? null;

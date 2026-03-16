@@ -31,7 +31,7 @@ type Lead = {
   phone: string;
   managerName: string;
   email: string;
-  followUpDate: Timestamp;
+  followUpDate?: Timestamp | null;
   storeType: string;
   grocerySupplier: string;
   comments: string;
@@ -44,13 +44,11 @@ type Lead = {
 };
 
 function dateInputToTimestamp(dateStr: string) {
-  // dateStr expected: YYYY-MM-DD
   const parts = (dateStr || "").split("-").map((v) => Number(v));
   if (parts.length !== 3 || parts.some((n) => !n)) {
     throw new Error("Invalid Follow Up Date.");
   }
   const [y, m, d] = parts;
-  // Use local noon to avoid off-by-one-day issues from timezone parsing.
   return Timestamp.fromDate(new Date(y, m - 1, d, 12, 0, 0));
 }
 
@@ -80,6 +78,9 @@ export default function SalesLeadsPage() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const deepLinkHandledRef = useRef<string | null>(null);
+  const mapPrefillHandledRef = useRef<string | null>(null);
+
+  const [sourceProspectId, setSourceProspectId] = useState<string>("");
 
   const [form, setForm] = useState({
     customerName: "",
@@ -104,7 +105,6 @@ export default function SalesLeadsPage() {
 
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
-  // ✅ Editable fields in details panel
   const [detailComments, setDetailComments] = useState("");
   const [detailStatus, setDetailStatus] = useState<LeadStatus>("open");
   const [detailFollowUpDate, setDetailFollowUpDate] = useState("");
@@ -127,6 +127,37 @@ export default function SalesLeadsPage() {
     }));
   };
 
+  // Prefill form from Territory Map and keep prospectId in local state
+  useEffect(() => {
+    const prospectId = searchParams.get("prospectId");
+    const customerName = searchParams.get("customerName");
+    const address = searchParams.get("address");
+    const city = searchParams.get("city");
+    const state = searchParams.get("state");
+    const zip = searchParams.get("zip");
+    const phone = searchParams.get("phone");
+    const storeType = searchParams.get("storeType");
+
+    if (!prospectId || !customerName) return;
+    if (mapPrefillHandledRef.current === prospectId) return;
+    mapPrefillHandledRef.current = prospectId;
+
+    setSourceProspectId(prospectId);
+
+    setForm((prev) => ({
+      ...prev,
+      customerName: customerName || prev.customerName,
+      address: address || prev.address,
+      city: city || prev.city,
+      state: state || prev.state,
+      zip: zip || prev.zip,
+      phone: phone || prev.phone,
+      storeType: storeType || prev.storeType,
+    }));
+
+    router.replace(pathname);
+  }, [searchParams, pathname, router]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -138,14 +169,23 @@ export default function SalesLeadsPage() {
 
     setSaving(true);
     try {
-      await addDoc(collection(db, "salesLeads"), {
+      const leadRef = await addDoc(collection(db, "salesLeads"), {
         ...form,
-        followUpDate: dateInputToTimestamp(form.followUpDate),
+        followUpDate: form.followUpDate ? dateInputToTimestamp(form.followUpDate) : null,
         salesmanId: u.uid,
         status: "open",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
+      if (sourceProspectId) {
+        await updateDoc(doc(db, "prospects", sourceProspectId), {
+          leadCreated: true,
+          leadCreatedAt: serverTimestamp(),
+          salesLeadId: leadRef.id,
+          updatedAt: serverTimestamp(),
+        });
+      }
 
       alert("Lead saved successfully.");
 
@@ -163,6 +203,10 @@ export default function SalesLeadsPage() {
         grocerySupplier: "",
         comments: "",
       });
+
+      setSourceProspectId("");
+
+      router.replace(`/salesLeads?leadId=${leadRef.id}&open=details`);
     } catch (error: any) {
       console.error("Firestore error:", error);
       alert(error?.message || "Error saving lead.");
@@ -181,7 +225,7 @@ export default function SalesLeadsPage() {
       await updateDoc(ref, {
         comments: detailComments,
         status: detailStatus,
-        followUpDate: dateInputToTimestamp(detailFollowUpDate),
+        followUpDate: detailFollowUpDate ? dateInputToTimestamp(detailFollowUpDate) : null,
         closedAt:
           detailStatus === "open"
             ? null
@@ -189,21 +233,19 @@ export default function SalesLeadsPage() {
         updatedAt: serverTimestamp(),
       });
 
-      // If lead was closed, hide it immediately and close the detail panel
       if (detailStatus !== "open") {
         setSelectedLead(null);
         setLeads((prev) => prev.filter((x) => x.id !== selectedLead.id));
         return;
       }
 
-      // Local UI update (snapshot will also refresh)
       setSelectedLead((prev) =>
         prev
           ? {
               ...prev,
               comments: detailComments,
               status: detailStatus,
-              followUpDate: dateInputToTimestamp(detailFollowUpDate),
+              followUpDate: detailFollowUpDate ? dateInputToTimestamp(detailFollowUpDate) : null,
             }
           : prev
       );
@@ -287,7 +329,6 @@ export default function SalesLeadsPage() {
           );
           setLeads(openOnly);
 
-          // If selected lead becomes closed or missing, close the panel
           setSelectedLead((prev) => {
             if (!prev) return null;
             const updated = openOnly.find((r) => r.id === prev.id);
@@ -309,18 +350,14 @@ export default function SalesLeadsPage() {
     };
   }, []);
 
-  // ✅ Deep-link: /sales-leads?leadId=XYZ&open=details
   useEffect(() => {
     const open = searchParams.get("open");
     const leadId = searchParams.get("leadId");
 
     if (open !== "details" || !leadId) return;
-
-    // prevent re-handling same deep link
     if (deepLinkHandledRef.current === leadId) return;
     deepLinkHandledRef.current = leadId;
 
-    // 1) if lead is already loaded, select it
     const existing = leads.find((l) => l.id === leadId);
     if (existing) {
       setSelectedLead(existing);
@@ -328,7 +365,6 @@ export default function SalesLeadsPage() {
       return;
     }
 
-    // 2) otherwise fetch it directly (admin might click, or it might be offscreen)
     (async () => {
       try {
         const snap = await getDoc(doc(db, "salesLeads", leadId));
@@ -358,7 +394,6 @@ export default function SalesLeadsPage() {
           salesmanId: data.salesmanId,
         };
 
-        // If it’s closed, don’t open details (matches your “hide closed” behavior)
         if (fetched.status !== "open") {
           router.replace(pathname);
           return;
@@ -388,7 +423,6 @@ export default function SalesLeadsPage() {
           ) : null}
         </div>
 
-        {/* LEFT: form */}
         <div>
           <form onSubmit={handleSubmit} className="space-y-4 max-w-2xl">
             <input
@@ -439,7 +473,6 @@ export default function SalesLeadsPage() {
               type="text"
               placeholder="Zip"
               className="w-full border rounded px-3 py-2"
-              required
             />
 
             <input
@@ -459,7 +492,6 @@ export default function SalesLeadsPage() {
               type="text"
               placeholder="Manager's Name"
               className="w-full border rounded px-3 py-2"
-              required
             />
 
             <input
@@ -469,7 +501,6 @@ export default function SalesLeadsPage() {
               type="email"
               placeholder="Email"
               className="w-full border rounded px-3 py-2"
-              required
             />
 
             <div className="space-y-1">
@@ -480,7 +511,6 @@ export default function SalesLeadsPage() {
                 onChange={handleChange}
                 type="date"
                 className="w-full border rounded px-3 py-2"
-                required
               />
             </div>
 
@@ -491,7 +521,6 @@ export default function SalesLeadsPage() {
               type="text"
               placeholder="Store Type"
               className="w-full border rounded px-3 py-2"
-              required
             />
 
             <input
@@ -510,7 +539,6 @@ export default function SalesLeadsPage() {
               placeholder="Comments"
               className="w-full border rounded px-3 py-2"
               rows={4}
-              required
             />
 
             <button
@@ -525,7 +553,6 @@ export default function SalesLeadsPage() {
           </form>
         </div>
 
-        {/* RIGHT: details + table */}
         <div className="max-w-full self-start">
           {selectedLead ? (
             <div className="border rounded bg-white p-3 mb-3">

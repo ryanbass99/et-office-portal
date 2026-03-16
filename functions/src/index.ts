@@ -1,7 +1,9 @@
 import { onObjectFinalized } from "firebase-functions/v2/storage";
+import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { logger } from "firebase-functions/v2";
 import { initializeApp } from "firebase-admin/app";
 import { getStorage } from "firebase-admin/storage";
+import { getFirestore } from "firebase-admin/firestore";
 
 import os from "os";
 import path from "path";
@@ -122,5 +124,78 @@ export const generateSalesSheetThumb = onObjectFinalized(
   }
 );
 
-// ✅ scheduled cleanup for AI Product Finder
+export const refillProspectMapSlot = onDocumentUpdated(
+  {
+    document: "prospects/{prospectId}",
+    region: "us-central1",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
 
+    if (!before || !after) return;
+
+    const beforeStatus = before.status ?? "open";
+    const afterStatus = after.status ?? "open";
+
+    // only react if status changed
+    if (beforeStatus === afterStatus) return;
+
+    const hubId = after.hubId ?? before.hubId ?? "";
+    if (!hubId) return;
+
+    const wasVisible = before.showOnMap === true;
+    const becameClosed = afterStatus === "dead" || afterStatus === "converted";
+
+    // Only fill a hole if a visible lead was just removed from the map
+    if (!wasVisible || !becameClosed) return;
+
+    const db = getFirestore();
+
+    try {
+      // make sure the changed prospect is off the map
+      if (after.showOnMap === true) {
+        await event.data!.after.ref.set({ showOnMap: false }, { merge: true });
+      }
+
+      const replacementSnap = await db
+        .collection("prospects")
+        .where("hubId", "==", hubId)
+        .where("hubEligible", "==", true)
+        .where("status", "==", "open")
+        .where("showOnMap", "==", false)
+        .orderBy("hubRank")
+        .limit(1)
+        .get();
+
+      if (replacementSnap.empty) {
+        logger.info("No replacement prospect found", {
+          hubId,
+          removedProspectId: event.params.prospectId,
+        });
+        return;
+      }
+
+      const replacement = replacementSnap.docs[0];
+
+      await replacement.ref.set({ showOnMap: true }, { merge: true });
+
+      logger.info("Promoted replacement prospect", {
+        hubId,
+        removedProspectId: event.params.prospectId,
+        replacementProspectId: replacement.id,
+      });
+    } catch (error) {
+      logger.error("Failed to refill prospect map slot", {
+        hubId,
+        prospectId: event.params.prospectId,
+        error,
+      });
+      throw error;
+    }
+  }
+);
+
+// ✅ scheduled cleanup for AI Product Finder

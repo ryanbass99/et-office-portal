@@ -86,6 +86,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <a className={navLink} href="/customers">
                 Customers
               </a>
+              <a className={navLink} href="/territory-map">
+                Accounts/Prospects
+              </a>
               <a className={navLink} href="/SalesOrders">
                 Open Sales Orders
               </a>
@@ -138,6 +141,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   onClick={() => setOpen(false)}
                 >
                   Customers
+                </a>
+                <a
+                  className={navLink}
+                  href="/territory-map"
+                  onClick={() => setOpen(false)}
+                >
+                  Accounts/Prospects
                 </a>
                 <a
                   className={navLink}
