@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -35,8 +36,16 @@ export default function AdminNavLink() {
   if (!isAdmin) return null;
 
   return (
-    <a className="block rounded px-3 py-2 hover:bg-gray-800" href="/admin">
-      Admin
-    </a>
+    <>
+      <a className="block rounded px-3 py-2 hover:bg-gray-800" href="/admin">
+        Admin
+      </a>
+      <a
+        className="block rounded px-3 py-2 hover:bg-gray-800"
+        href="/admin/tiktok-trends"
+      >
+        TikTok Trends
+      </a>
+    </>
   );
 }

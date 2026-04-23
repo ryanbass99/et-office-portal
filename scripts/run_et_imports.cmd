@@ -1,5 +1,5 @@
 @echo off
-cd /d "C:\ETImports"
+cd /d "C:\Users\ryan.bass\et-office-portal\scripts"
 
 echo =====================================
 echo ET IMPORT STARTED %DATE% %TIME%
@@ -27,6 +27,18 @@ node build_item_customer_index.mjs
 if errorlevel 1 pause
 
 node computeTopItems60d.mjs
+if errorlevel 1 pause
+
+node pull_prospects_osm_city.mjs
+if errorlevel 1 pause
+
+node pull_prospects_from_hubs.mjs
+if errorlevel 1 pause
+
+node process_prospects_raw.mjs
+if errorlevel 1 pause
+
+node rank_prospects_by_hub.mjs
 if errorlevel 1 pause
 
 echo =====================================
