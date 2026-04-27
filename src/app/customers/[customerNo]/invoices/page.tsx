@@ -9,7 +9,7 @@ import Link from "next/link";
 type Invoice = {
   id: string;
   invoiceNo?: string;
-  invoiceDate?: any; // Firestore Timestamp
+  invoiceDate?: any;
   nonTaxableSalesAmt?: number;
   comment?: string;
 };
@@ -18,9 +18,12 @@ type InvoiceLine = {
   id: string;
   itemCode?: string;
   itemCodeDesc?: string;
+  description?: string;
   quantityShipped?: number;
+  qty?: number;
   unitPrice?: number;
   extensionAmt?: number;
+  ext?: number;
   discount?: number;
   productLine?: string;
   warehouseCode?: string;
@@ -42,6 +45,18 @@ function formatDate(ts: any) {
   } catch {
     return "";
   }
+}
+
+function lineDesc(l: InvoiceLine) {
+  return l.itemCodeDesc ?? l.description ?? "";
+}
+
+function lineQty(l: InvoiceLine) {
+  return Number(l.quantityShipped ?? l.qty ?? 0) || 0;
+}
+
+function lineExt(l: InvoiceLine) {
+  return Number(l.extensionAmt ?? l.ext ?? 0) || 0;
 }
 
 export default function CustomerInvoicesPage() {
@@ -94,22 +109,18 @@ export default function CustomerInvoicesPage() {
     try {
       const invoiceId = inv.invoiceNo || inv.id;
 
-      // NOTE: avoid orderBy to prevent needing indexes; sort in JS
-      const snap = await getDocs(
-        collection(db, "invoices", invoiceId, "lines")
-      );
+      const snap = await getDocs(collection(db, "invoices", invoiceId, "lines"));
 
       const rows: InvoiceLine[] = snap.docs.map((d) => ({
         id: d.id,
         ...(d.data() as any),
       }));
 
-      // Only show lines with a positive extension amount (hides duplicate $0 rows)
-      const filtered = rows.filter((l) => Math.abs(Number(l.extensionAmt) || 0) > 0.0001);
+      const filtered = rows.filter((l) => Math.abs(lineExt(l)) > 0.0001);
 
       filtered.sort((a, b) => {
-        const ad = (a.itemCodeDesc || "").toLowerCase();
-        const bd = (b.itemCodeDesc || "").toLowerCase();
+        const ad = lineDesc(a).toLowerCase();
+        const bd = lineDesc(b).toLowerCase();
         if (ad < bd) return -1;
         if (ad > bd) return 1;
         return (a.itemCode || "").localeCompare(b.itemCode || "");
@@ -125,15 +136,14 @@ export default function CustomerInvoicesPage() {
   }
 
   const linesSummary = useMemo(() => {
-    const qty = lines.reduce((sum, l) => sum + (Number(l.quantityShipped) || 0), 0);
-    const ext = lines.reduce((sum, l) => sum + (Number(l.extensionAmt) || 0), 0);
+    const qty = lines.reduce((sum, l) => sum + lineQty(l), 0);
+    const ext = lines.reduce((sum, l) => sum + lineExt(l), 0);
     const uniqueItems = new Set(lines.map((l) => l.itemCode || "").filter(Boolean)).size;
     return { qty, ext, uniqueItems };
   }, [lines]);
 
   return (
     <div className="p-6">
-      {/* main content width (looks better than full bleed) */}
       <div className="max-w-3xl w-full">
         <div className="mb-4">
           <Link href="/customers" className="text-sm text-blue-600 hover:underline">
@@ -191,15 +201,13 @@ export default function CustomerInvoicesPage() {
         )}
       </div>
 
-      {/* Right-side drawer (Call Prep style) */}
       {selectedInvoice && (
         <div className="fixed inset-0 z-50">
-          {/* overlay */}
           <div
             className="absolute inset-0 bg-black/30"
             onClick={() => setSelectedInvoice(null)}
           />
-          {/* panel */}
+
           <aside className="absolute right-0 top-0 h-full w-[420px] max-w-[90vw] bg-white shadow-xl border-l">
             <div className="p-4 border-b flex items-start justify-between">
               <div>
@@ -207,7 +215,8 @@ export default function CustomerInvoicesPage() {
                   Invoice • {selectedInvoice.invoiceNo || selectedInvoice.id}
                 </div>
                 <div className="text-xs text-gray-500 tabular-nums">
-                  {formatDate(selectedInvoice.invoiceDate)} • Total {money(selectedInvoice.nonTaxableSalesAmt)}
+                  {formatDate(selectedInvoice.invoiceDate)} • Total{" "}
+                  {money(selectedInvoice.nonTaxableSalesAmt)}
                 </div>
               </div>
 
@@ -222,7 +231,6 @@ export default function CustomerInvoicesPage() {
             </div>
 
             <div className="p-4 space-y-3 overflow-y-auto h-[calc(100%-56px)]">
-              {/* Snapshot */}
               <div className="border rounded p-3">
                 <div className="font-semibold text-sm mb-2">Snapshot</div>
                 <div className="text-sm text-gray-700 space-y-1">
@@ -249,7 +257,6 @@ export default function CustomerInvoicesPage() {
                 </div>
               </div>
 
-              {/* Lines */}
               <div className="border rounded overflow-hidden">
                 <div className="px-3 py-2 bg-gray-100 font-semibold text-sm">
                   Invoice Lines
@@ -278,7 +285,7 @@ export default function CustomerInvoicesPage() {
                             </td>
                             <td className="px-3 py-2">
                               <div className="text-gray-900">
-                                {l.itemCodeDesc || "—"}
+                                {lineDesc(l) || "—"}
                               </div>
                               {l.commentText ? (
                                 <div className="text-gray-500 mt-0.5">
@@ -287,10 +294,10 @@ export default function CustomerInvoicesPage() {
                               ) : null}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {(Number(l.quantityShipped) || 0).toLocaleString()}
+                              {lineQty(l).toLocaleString()}
                             </td>
                             <td className="px-3 py-2 text-right tabular-nums">
-                              {money(l.extensionAmt)}
+                              {money(lineExt(l))}
                             </td>
                           </tr>
                         ))}
@@ -299,9 +306,6 @@ export default function CustomerInvoicesPage() {
                   </div>
                 )}
               </div>
-
-              {/* Footer actions (optional later) */}
-              {/* <div className="text-xs text-gray-400">More actions coming…</div> */}
             </div>
           </aside>
         </div>
