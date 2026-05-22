@@ -181,14 +181,17 @@ export async function POST(req: Request) {
     await transporter.sendMail({
       to: toEmail,
       from: `"ET Portal Customer List" <${SMTP_FROM_EMAIL}>`,
-      replyTo: toEmail, // replies go to the logged-in rep
       subject: `Customer Export (${rows.length - 1} customers)`,
-      text: "Attached is your customer export based on your current filters.",
+      text:
+        "Hello,\n\nAttached is your ET Products customer export based on your current filters.\n\nThank you,\nET Products",
+      headers: {
+        "X-Mailer": "ET Portal",
+      },
       attachments: [
         {
           filename,
           content: csv,
-          contentType: "text/csv",
+          contentType: "text/csv; charset=utf-8",
         },
       ],
     });
