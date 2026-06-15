@@ -42,9 +42,9 @@ export default function AdminNavLink() {
       </a>
       <a
         className="block rounded px-3 py-2 hover:bg-gray-800"
-        href="/admin/tiktok-trends"
+        href="/trends"
       >
-        TikTok Trends
+        Trend Scout
       </a>
     </>
   );

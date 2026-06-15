@@ -2762,6 +2762,14 @@ export default function CustomersPage() {
                               Invoices
                             </a>
 
+                            <a
+                              href={`/sales-orders?customerNo=${encodeURIComponent(String(c.customerNo ?? "").trim())}`}
+                              className="px-1.5 py-0.5 rounded border bg-white text-[10px] text-gray-700 hover:bg-gray-50"
+                              title="View open sales orders"
+                            >
+                              Open Orders
+                            </a>
+
                             <button
                               type="button"
                               onClick={() => openNotes(c)}

@@ -59,6 +59,45 @@ function lineExt(l: InvoiceLine) {
   return Number(l.extensionAmt ?? l.ext ?? 0) || 0;
 }
 
+function groupInvoiceLines(rawLines: InvoiceLine[]) {
+  const grouped = new Map<string, InvoiceLine>();
+
+  for (const l of rawLines) {
+    const itemCode = l.itemCode || "";
+    const desc = lineDesc(l);
+    const key = itemCode || desc || l.id;
+
+    const existing = grouped.get(key);
+
+    if (!existing) {
+      grouped.set(key, {
+        ...l,
+        id: key,
+        quantityShipped: lineQty(l),
+        qty: lineQty(l),
+        extensionAmt: lineExt(l),
+        ext: lineExt(l),
+      });
+      continue;
+    }
+
+    const newQty = lineQty(existing) + lineQty(l);
+    const newExt = lineExt(existing) + lineExt(l);
+
+    grouped.set(key, {
+      ...existing,
+      quantityShipped: newQty,
+      qty: newQty,
+      extensionAmt: newExt,
+      ext: newExt,
+    });
+  }
+
+  return Array.from(grouped.values()).filter(
+    (l) => Math.abs(lineQty(l)) > 0.0001 || Math.abs(lineExt(l)) > 0.0001
+  );
+}
+
 export default function CustomerInvoicesPage() {
   const params = useParams();
   const customerNo = params?.customerNo as string;
@@ -116,7 +155,7 @@ export default function CustomerInvoicesPage() {
         ...(d.data() as any),
       }));
 
-      const filtered = rows.filter((l) => Math.abs(lineExt(l)) > 0.0001);
+      const filtered = groupInvoiceLines(rows);
 
       filtered.sort((a, b) => {
         const ad = lineDesc(a).toLowerCase();
