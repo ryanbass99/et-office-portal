@@ -23,6 +23,8 @@ const CHAIN_KEYWORDS = [
   "Target",
   "Kwik Star",
   "Kum & Go",
+  "Murphy Oil",
+  "Loves",
 ];
 
 admin.initializeApp({
