@@ -2836,7 +2836,7 @@ export default function CustomersPage() {
             aria-label="Close groups"
             onClick={closeGroupsModal}
           />
-          <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-md max-h-[calc(100dvh-2rem)] -translate-x-1/2 -translate-y-1/2 bg-white shadow-xl border rounded-lg overflow-hidden flex flex-col">
+          <div className="absolute left-1/2 top-1/2 w-[92vw] max-w-md h-[min(680px,calc(100dvh-2rem))] -translate-x-1/2 -translate-y-1/2 bg-white shadow-xl border rounded-lg overflow-hidden flex flex-col">
             <div className="p-3 border-b flex items-start justify-between gap-3 shrink-0">
               <div className="min-w-0">
                 <div className="font-semibold leading-5 truncate">
@@ -2901,7 +2901,7 @@ export default function CustomersPage() {
                 ) : groups.length === 0 ? (
                   <div className="text-sm text-gray-600">No groups yet.</div>
                 ) : (
-                  <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
+                  <div className="space-y-2 flex-1 min-h-0 overflow-y-scroll overscroll-contain pr-2" style={{ scrollbarWidth: "auto" }}>
                     {groups.map((g) => {
                       const checked = Boolean(groupMembership[g.id]);
                       return (
