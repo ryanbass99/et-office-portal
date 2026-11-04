@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import nodemailer from "nodemailer";
 
 import { getApps, initializeApp, cert } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
@@ -11,13 +10,6 @@ function json(status: number, body: any) {
     headers: { "Content-Type": "application/json" },
   });
 }
-
-// ✅ Do NOT crash module load if env is missing
-const SMTP_HOST = process.env.SMTP_HOST || "";
-const SMTP_PORT = Number(process.env.SMTP_PORT || "587");
-const SMTP_USER = process.env.SMTP_USER || "";
-const SMTP_PASS = process.env.SMTP_PASS || "";
-const SMTP_FROM_EMAIL = process.env.SMTP_FROM_EMAIL || "";
 
 // Firebase Admin init (server-side) — wrapped so it can't throw HTML pages
 function ensureAdmin() {
@@ -61,24 +53,12 @@ function toCsvRow(values: any[]) {
   return values.map(csvEscape).join(",");
 }
 
-function requireSmtpConfig() {
-  const missing = [
-    !SMTP_HOST ? "SMTP_HOST" : null,
-    !SMTP_PORT ? "SMTP_PORT" : null,
-    !SMTP_USER ? "SMTP_USER" : null,
-    !SMTP_PASS ? "SMTP_PASS" : null,
-    !SMTP_FROM_EMAIL ? "SMTP_FROM_EMAIL" : null,
-  ].filter(Boolean);
-
-  if (missing.length) {
-    throw new Error(`Missing SMTP env vars: ${missing.join(", ")}`);
-  }
-}
-
 export async function POST(req: Request) {
   try {
-    // ✅ Validate SMTP config first
-    requireSmtpConfig();
+    const apiKey = process.env.SENDGRID_API_KEY;
+    if (!apiKey) {
+      throw new Error("Missing SENDGRID_API_KEY");
+    }
 
     // ✅ Ensure Firebase Admin is initialized
     ensureAdmin();
@@ -164,39 +144,41 @@ export async function POST(req: Request) {
       .toISOString()
       .slice(0, 10)}.csv`;
 
-    // ✅ SMTP transport (Office 365 friendly)
-    const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  requireTLS: SMTP_PORT === 587,
-  authMethod: "LOGIN",
-  auth: {
-    user: SMTP_USER,
-    pass: SMTP_PASS,
-  },
-});
-
-    // Optional: verify connection early for clearer errors
-    await transporter.verify();
-
-    await transporter.sendMail({
-      to: toEmail,
-      from: `"ET Portal Customer List" <${SMTP_FROM_EMAIL}>`,
-      subject: `Customer Export (${rows.length - 1} customers)`,
-      text:
-        "Hello,\n\nAttached is your ET Products customer export based on your current filters.\n\nThank you,\nET Products",
+    const sendGridResponse = await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
       headers: {
-        "X-Mailer": "ET Portal",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
-      attachments: [
-        {
-          filename,
-          content: csv,
-          contentType: "text/csv; charset=utf-8",
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: toEmail }] }],
+        from: {
+          email: "sales@etproductsinc.com",
+          name: "ET Portal Customer List",
         },
-      ],
+        subject: `Customer Export (${rows.length - 1} customers)`,
+        content: [
+          {
+            type: "text/plain",
+            value:
+              "Hello,\n\nAttached is your ET Products customer export based on your current filters.\n\nThank you,\nET Products",
+          },
+        ],
+        headers: { "X-Mailer": "ET Portal" },
+        attachments: [
+          {
+            filename,
+            content: Buffer.from(csv, "utf8").toString("base64"),
+            type: "text/csv; charset=utf-8",
+            disposition: "attachment",
+          },
+        ],
+      }),
     });
+
+    if (sendGridResponse.status !== 202) {
+      throw new Error(`SendGrid rejected the customer export (HTTP ${sendGridResponse.status})`);
+    }
 
     // ✅ Usage tracking: record export event (keep your existing event log)
     await adminDb.collection("usageEvents").add({
