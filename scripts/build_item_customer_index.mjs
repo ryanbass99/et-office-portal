@@ -27,6 +27,7 @@
  */
 
 import fs from "fs";
+import { parseInvoiceDate as parseUSDate } from "./invoice_date.mjs";
 import path from "path";
 import Papa from "papaparse";
 import admin from "firebase-admin";
@@ -34,10 +35,12 @@ import admin from "firebase-admin";
 const SERVICE_ACCOUNT_PATH =
   process.env.SERVICE_ACCOUNT_PATH || "C:\\SageExports\\serviceAccountKey.json";
 const CSV_HH_PATH =
-  process.env.CSV_HH_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HH.csv";
+  process.env.CSV_HH_PATH || "\\\\ets02\\SageExports\\Inv_HH.csv";
 const CSV_HD_PATH =
-  process.env.CSV_HD_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HD.csv";
+  process.env.CSV_HD_PATH || "\\\\ets02\\SageExports\\Inv_HD.csv";
 const YEARS_BACK = Number(process.env.YEARS_BACK || 3);
+const FULL_RESCAN = process.env.FULL_RESCAN === "1";
+const DRY_RUN = process.env.DRY_RUN === "1";
 
 function cleanStr(v) {
   if (v === null || v === undefined) return "";
@@ -55,17 +58,6 @@ function padSalesperson(v) {
 }
 
 /** MM/DD/YYYY -> Date (local). If parse fails, returns null. */
-function parseUSDate(mmddyyyy) {
-  const s = cleanStr(mmddyyyy);
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!m) return null;
-  const month = Number(m[1]);
-  const day = Number(m[2]);
-  const year = Number(m[3]);
-  if (!month || !day || !year) return null;
-  return new Date(year, month - 1, day);
-}
-
 function cutoffDate(yearsBack) {
   const now = new Date();
   return new Date(now.getFullYear() - yearsBack, now.getMonth(), now.getDate());
@@ -151,7 +143,7 @@ const cutoff = cutoffDate(YEARS_BACK);
 let wmDate = null;
 let wmInvoiceNo = "";
 try {
-  const snap = await STATE_REF.get();
+  const snap = FULL_RESCAN ? { exists: false } : await STATE_REF.get();
   if (snap.exists) {
     const data = snap.data() || {};
     const iso = cleanStr(data.lastInvoiceDateISO);
@@ -160,6 +152,14 @@ try {
   }
 } catch {
   // If state doc can't be read, fall back to full window.
+  wmDate = null;
+  wmInvoiceNo = "";
+}
+
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+if (wmDate && (!Number.isFinite(wmDate.getTime()) || wmDate > today)) {
+  console.warn("Invalid/future watermark detected; rescanning the full window.");
   wmDate = null;
   wmInvoiceNo = "";
 }
@@ -190,6 +190,7 @@ console.log("Header rows loaded:", hhRows.length);
 const invMap = new Map(); // invoiceNo -> { customerNo, salespersonNo, invoiceDate }
 const newInvoiceNos = new Set();
 let hhKept = 0;
+let invalidDates = 0;
 let newestInvoiceDate = wmDate;
 let newestInvoiceNo = wmInvoiceNo;
 
@@ -202,7 +203,8 @@ for (let i = 0; i < hhRows.length; i++) {
 
   const invoiceDateRaw = cleanStr(ciGet(r, "InvoiceDate") ?? ciGet(r, "Date"));
   const invoiceDate = parseUSDate(invoiceDateRaw);
-  if (!invoiceDate || invoiceDate < effectiveLower) continue;
+  if (!invoiceDate) { invalidDates++; continue; }
+  if (invoiceDate < effectiveLower) continue;
 
   // If watermark exists, only process strictly newer invoices (date/no tie-break)
   if (wmDate) {
@@ -234,7 +236,7 @@ for (let i = 0; i < hhRows.length; i++) {
   }
 }
 
-console.log(`In-range invoices mapped: ${hhKept}`);
+console.log(`In-range invoices mapped: ${hhKept}; invalid/future dates skipped: ${invalidDates}`);
 
 if (hhKept === 0) {
   console.log("No new invoices to process. Exiting.");
@@ -250,6 +252,7 @@ console.log("Line rows loaded:", hdRows.length);
 
 const idx = new Map(); // key -> { itemCode, salespersonNo, customers:Set }
 let linesUsed = 0;
+const invoicesWithLines = new Set();
 
 for (let i = 0; i < hdRows.length; i++) {
   const r = hdRows[i] || {};
@@ -263,6 +266,8 @@ for (let i = 0; i < hdRows.length; i++) {
 
   const header = invMap.get(invoiceNo);
   if (!header) continue;
+
+  invoicesWithLines.add(invoiceNo);
 
   const itemCode = cleanStr(ciGet(r, "ItemCode") ?? ciGet(r, "Item")).toUpperCase();
   if (!itemCode) continue;
@@ -280,6 +285,17 @@ for (let i = 0; i < hdRows.length; i++) {
 
 console.log(`Lines contributing to index: ${linesUsed}`);
 console.log(`Index docs to write: ${idx.size}`);
+
+const missingDetails = [...newInvoiceNos].filter((no) => !invoicesWithLines.has(no));
+if (missingDetails.length) {
+  console.warn("Watermark will not advance; invoices without detail rows:", missingDetails.length);
+}
+if (DRY_RUN) {
+  const k628 = [...idx.entries()].filter(([, v]) => v.itemCode === "K628")
+    .map(([id, v]) => ({ id, customerCount: v.customers.size }));
+  console.log("DRY RUN: no index or watermark writes.", JSON.stringify({ k628, missingDetailCount: missingDetails.length }));
+  process.exit(0);
+}
 
 // 3) Merge + write to Firestore (union with existing docs)
 // Fetch existing docs in chunks so we don't lose previously indexed customers.
@@ -334,7 +350,7 @@ for (let start = 0; start < entries.length; start += CHUNK) {
 if (batchCount > 0) await commitWithRetry(batch);
 
 // 4) Update watermark only after successful writes
-if (newestInvoiceDate) {
+if (newestInvoiceDate && missingDetails.length === 0) {
   await STATE_REF.set(
     {
       lastInvoiceDateISO: toISODate(newestInvoiceDate),

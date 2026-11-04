@@ -14,6 +14,7 @@
  */
 
 import fs from "fs";
+import { parseInvoiceDate as parseUSDate } from "./invoice_date.mjs";
 import path from "path";
 import crypto from "crypto";
 import Papa from "papaparse";
@@ -23,10 +24,10 @@ const SERVICE_ACCOUNT_PATH =
   process.env.SERVICE_ACCOUNT_PATH || "C:\\SageExports\\serviceAccountKey.json";
 
 const CSV_HH_PATH =
-  process.env.CSV_HH_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HH.csv";
+  process.env.CSV_HH_PATH || "\\\\ets02\\SageExports\\Inv_HH.csv";
 
 const CSV_HD_PATH =
-  process.env.CSV_HD_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Inv_HD.csv";
+  process.env.CSV_HD_PATH || "\\\\ets02\\SageExports\\Inv_HD.csv";
 
 const LOOKBACK_DAYS = Number(process.env.LOOKBACK_DAYS || 14);
 const BATCH_LIMIT = Number(process.env.BATCH_LIMIT || 400);
@@ -51,20 +52,6 @@ function parseNumber(v) {
   if (!Number.isFinite(n)) return 0;
 
   return isParenNeg || isTrailNeg ? -n : n;
-}
-
-function parseUSDate(mmddyyyy) {
-  const s = cleanStr(mmddyyyy);
-  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!m) return null;
-
-  const month = Number(m[1]);
-  const day = Number(m[2]);
-  const year = Number(m[3]);
-
-  if (!month || !day || !year) return null;
-
-  return new Date(year, month - 1, day);
 }
 
 function normalizeDocId(raw) {

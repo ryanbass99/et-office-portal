@@ -166,14 +166,16 @@ export async function POST(req: Request) {
 
     // ✅ SMTP transport (Office 365 friendly)
     const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465, // 465 = true, 587 = false
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASS,
-      },
-    });
+  host: SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465,
+  requireTLS: SMTP_PORT === 587,
+  authMethod: "LOGIN",
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS,
+  },
+});
 
     // Optional: verify connection early for clearer errors
     await transporter.verify();

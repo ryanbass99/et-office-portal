@@ -71,7 +71,7 @@ async function main() {
   const db = admin.firestore();
 
 const csvPath =
-  process.env.ITEMS_CSV_PATH || "\\\\ets02\\ETS02_SAGE\\SageExports\\Items.csv";
+  process.env.ITEMS_CSV_PATH || "\\\\ets02\\SageExports\\Items.csv";
   const collectionName =
     process.env.FIRESTORE_ITEMS_COLLECTION || "itemsMaster";
 
