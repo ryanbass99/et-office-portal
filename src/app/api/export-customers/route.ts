@@ -169,7 +169,7 @@ export async function POST(req: Request) {
           {
             filename,
             content: Buffer.from(csv, "utf8").toString("base64"),
-            type: "text/csv; charset=utf-8",
+            type: "text/csv",
             disposition: "attachment",
           },
         ],
